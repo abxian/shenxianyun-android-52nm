@@ -120,7 +120,9 @@ gh run list --workflow build-apk-simple.yaml --limit 1
 6. 执行 `./gradlew :app:assembleMetaDebug` 或 `assembleMetaRelease`
 7. 上传 `app/build/outputs/apk/meta/**.apk`
 
-正式发布仍须使用固定签名，并在明确批准后单独执行发布流程。
+正式发布使用 `.github/workflows/release-android.yaml`：版本提交必须位于
+`main`，推送与 `versionName` 完全一致的 `v*.*.*` 标签后，工作流强制检查
+4 个签名 Secret、构建 Meta Release APK，并创建非预发布的 GitHub Release。
 
 ## 后台接口
 
@@ -272,11 +274,12 @@ APK 按 ABI 拆分 + 一个 universal 包，文件名形如：
 
 ### 四、52nm 分发边界
 
-本仓库当前只通过 GitHub Actions 生成 APK artifact，不上传或覆盖原神仙云
-Dufs。后续如果要建立 52nm 独立下载站，先配置独立存储、域名和凭据，再增加
-发布步骤。
+本仓库的正式 APK 只发布到 `abxian/shenxianyun-android-52nm` 的 GitHub
+Release，不上传或覆盖原神仙云 Dufs，也不写入旧客户端仓库。后续如果要建立
+52nm 独立下载站，先配置独立存储、域名和凭据，再增加发布步骤。
 
-从 Action artifact 下载 zip 解压后，可按下表选择安装包：
+未发布验证从 Action artifact 下载；正式版本从对应 `v*.*.*` Release 下载。
+可按下表选择安装包：
 
 | 固定分发名 | 来源产物 |
 | --- | --- |
@@ -290,5 +293,6 @@ Dufs。后续如果要建立 52nm 独立下载站，先配置独立存储、域�
 1. 改代码 → 改 `build.gradle.kts` 的 `versionName` / `versionCode`（code 必须递增）。
 2. `git commit` → `git push origin main`，自动触发 Build Android APK。
 3. 等 Action 跑完 → 下载 artifact `shenxianyun-android-apk` 并解压。
-4. 使用 `shenxianyun-keys` 中相同的 keystore 签名。
-5. 先真机验证；需要正式发布时再单独批准 Release/下载站步骤。
+4. 先真机验证；获得正式发布批准后，推送 `v<versionName>` 标签。
+5. 等 `Release Android` 成功，核对 Release 为非 draft、非 prerelease，
+   APK 证书与 `shenxianyun-keys` 中的正式证书一致，再更新 52nm 后台下载地址。

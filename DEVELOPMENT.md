@@ -470,6 +470,18 @@ gh workflow run build-pre-release.yaml --ref <branch>
 `Build Pre-Release` 会发布 `Prerelease-alpha` GitHub Pre-release，并把 tag
 绑定到本次工作流的 `github.sha`。它不应更新正式版本、Dufs 或后台升级元数据。
 
+明确获准发布 52nm 正式版后，先确认版本提交已经位于 `main`，再推送与
+`versionName` 一致的标签：
+
+```bash
+git tag v<versionName>
+git push origin v<versionName>
+```
+
+`Release Android`（`.github/workflows/release-android.yaml`）会强制使用
+Actions Secrets 中的正式签名，发布到本 52nm 仓库的非预发布 GitHub Release；
+不得上传旧神仙云 Dufs 或改动旧客户端仓库。
+
 不要提交：
 
 - `local.properties`
