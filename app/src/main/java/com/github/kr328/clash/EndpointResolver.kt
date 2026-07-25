@@ -16,17 +16,14 @@ import java.net.URL
  * 发现失败 → 用本地缓存；再没有 → 用内置默认。任何一步都不阻塞启动、不抛异常。
  */
 object EndpointResolver {
-    /** 写死的两条主线路：神仙云1=国内直连域名, 神仙云2=国外(CF)域名。始终排最前。 */
-    private val PINNED_API_BASES = listOf(
-        "https://api.sxnn.de:5443", // 神仙云1 国内直连
-        "https://sxnn.de",          // 神仙云2 国外(CF)
-    )
+    /** 52nm 国内主线路与两个国外 443 备用域名。始终按配置顺序排列。 */
+    private val PINNED_API_BASES = DomainProfile.API_BASES
 
-    /** 写死主线路条数（神仙云1/2），UI 判断"前两条是否都不通"用。 */
-    const val PINNED_COUNT = 2
+    /** 写死主线路条数，UI 仅在全部固定线路不可用时显示动态兜底。 */
+    val PINNED_COUNT = PINNED_API_BASES.size
 
     /** 内置兜底默认值（发现源全挂时用第一条写死线路）。 */
-    const val DEFAULT_API_BASE = "https://api.sxnn.de:5443"
+    const val DEFAULT_API_BASE = DomainProfile.DOMESTIC_API_BASE
 
     /** 完整线路 = 写死主线路(神仙云1/2) + 发现的 api_bases(神仙云3/4…, 去重排后)。 */
     private fun allApiBases(): List<String> {
@@ -35,16 +32,11 @@ object EndpointResolver {
         return merged
     }
 
-    // 发现锚点：第一个是 web 后台「保存并发布」自动上传的 endpoints.json（唯一真源，dufs），
-    // 后两个是备份（GitHub 手动同步、app 动态接口）。
-    private val DISCOVERY_URLS = listOf(
-        "https://sxy.sxnn.de:5443/endpoints.json",
-        "http://114.80.36.225:5011/endpoints.json",
-        "https://raw.githubusercontent.com/abxian/shenxianyun-config/main/endpoints.json",
-        "https://sxnn.de/api/endpoints",
-    )
+    // 发现锚点：独立站动态接口优先，GitHub 与国外站点作为备用。
+    private val DISCOVERY_URLS = DomainProfile.DISCOVERY_URLS
 
-    private const val STORE = "jc116_endpoints"
+    // 使用独立存储，覆盖安装旧客户端时不会继续读取旧 sxnn/jc116 缓存。
+    private const val STORE = "shenxianyun_52nm_endpoints"
     private const val KEY_API_BASES = "api_bases"
     private const val KEY_ACTIVE_BASE = "api_base_active"
     private const val KEY_SUB_BASE = "sub_base"

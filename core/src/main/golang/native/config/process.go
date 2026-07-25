@@ -61,8 +61,8 @@ func patchGeneral(cfg *config.RawConfig, profileDir string) error {
 
 func patchBackendDirectRule(cfg *config.RawConfig, _ string) error {
 	directRules := []string{
-		"DOMAIN,sub.jc116.com,DIRECT",
-		"DOMAIN-SUFFIX,jc116.com,DIRECT",
+		"DOMAIN,api.52nm.de,DIRECT",
+		"DOMAIN-SUFFIX,52nm.de,DIRECT",
 	}
 	exists := map[string]bool{}
 	for _, rule := range cfg.Rule {

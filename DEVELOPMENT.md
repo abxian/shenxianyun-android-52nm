@@ -15,10 +15,10 @@ Android 客户端负责：
 - 向后台上报在线设备。
 - 支持网页 `shenxianyun://` 一键导入。
 
-默认后台：
+52nm 绑定版本默认后台：
 
 ```text
-https://sub.jc116.com
+https://api.52nm.de:5443
 ```
 
 ## 2. 仓库和分支

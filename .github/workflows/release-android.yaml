@@ -1,0 +1,100 @@
+name: Release Android
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build signed APK and publish Release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Verify tag, version and main
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION=$(sed -n 's/^[[:space:]]*versionName = "\\([^"]*\\)"/\\1/p' build.gradle.kts | head -1)
+          CODE=$(sed -n 's/^[[:space:]]*versionCode = \\([0-9]*\\)/\\1/p' build.gradle.kts | head -1)
+          test "$GITHUB_REF_NAME" = "v$VERSION"
+          test -n "$CODE"
+          git fetch origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "VERSION_CODE=$CODE" >> "$GITHUB_ENV"
+
+      - name: Setup Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v5
+
+      - name: Setup Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c
+        with:
+          go-download-base-url: https://github.com/MetaCubeX/go/releases/download/build
+          go-version: "1.26"
+
+      - name: Apply Go patches
+        shell: bash
+        run: |
+          cd "$(go env GOROOT)"
+          for patch_file in "$GITHUB_WORKSPACE"/.github/patch/*.patch; do
+            patch -N -p 1 < "$patch_file" || true
+          done
+
+      - name: Update CA bundle
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ca-certificates
+          sudo update-ca-certificates
+          cp -f /etc/ssl/certs/ca-certificates.crt core/src/foss/golang/clash/component/ca/ca-certificates.crt
+
+      - name: Configure mandatory release signing
+        env:
+          SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
+          SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
+          SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
+          SIGNING_KEYSTORE_BASE64: ${{ secrets.SIGNING_KEYSTORE_BASE64 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$SIGNING_STORE_PASSWORD"
+          test -n "$SIGNING_KEY_ALIAS"
+          test -n "$SIGNING_KEY_PASSWORD"
+          test -n "$SIGNING_KEYSTORE_BASE64"
+          printf '%s' "$SIGNING_KEYSTORE_BASE64" | base64 -d > release.keystore
+          {
+            echo "keystore.password=$SIGNING_STORE_PASSWORD"
+            echo "key.alias=$SIGNING_KEY_ALIAS"
+            echo "key.password=$SIGNING_KEY_PASSWORD"
+          } > signing.properties
+
+      - name: Build signed Meta Release APK
+        run: ./gradlew --no-daemon app:assembleMetaRelease
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          name: 神仙云 Android 52nm v${{ env.VERSION }}
+          tag_name: ${{ github.ref_name }}
+          target_commitish: ${{ github.sha }}
+          prerelease: false
+          generate_release_notes: true
+          body_path: docs/RELEASE_2.11.46.md
+          files: |
+            app/build/outputs/apk/meta/release/*.apk
+            app/build/outputs/apk/meta/release/output-metadata.json

@@ -925,7 +925,7 @@ class MainActivity : BaseActivity<MainDesign>() {
             proxies:
               - "$EXPIRED_NODE_NAME"
         rules:
-          - DOMAIN-SUFFIX,jc116.com,DIRECT
+          - DOMAIN-SUFFIX,${DomainProfile.OFFICIAL_DOMAIN_SUFFIX},DIRECT
           - MATCH,节点选择
     """.trimIndent()
 

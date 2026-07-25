@@ -2,11 +2,21 @@
 
 这是神仙云安卓客户端，基于 Clash Meta for Android 改造。目标是保留稳定的原版 VPN/TUN 开关和 Mihomo 内核能力，同时把使用流程简化为提取码订阅、一键启动、节点选择。
 
+## 52nm 域名配置
+
+本仓库绑定 52nm 独立 vpn-web：
+
+- 国内 API：`https://api.52nm.de:5443`
+- 国外备用：`https://52nm.de`、`https://www.52nm.de`
+- 换绑流程：[`docs/DOMAIN_MIGRATION_52NM.md`](./docs/DOMAIN_MIGRATION_52NM.md)
+
+运行时地址集中在 `DomainProfile.kt`，不会读取原神仙云的端点发现源。
+
 ## 当前功能
 
 - 提取码订阅
   - 用户首次打开后输入后台提取码。
-  - 客户端自动请求 `https://sub.jc116.com/api/verify/<code>`。
+  - 客户端自动请求 `https://api.52nm.de:5443/api/verify/<code>`。
   - 验证成功后自动创建 URL 订阅配置，保存提取码、配置 UUID、过期时间、订阅更新版本。
   - 同一设备首次导入同一提取码时，后台记录一次提取次数。
   - 自动更新订阅不重复记录提取次数。
@@ -114,10 +124,10 @@ gh run list --workflow build-apk-simple.yaml --limit 1
 
 ## 后台接口
 
-默认后台地址在 `MainActivity.kt` 和 `ExternalControlActivity.kt`：
+默认后台地址集中在 `DomainProfile.kt`：
 
 ```kotlin
-const val SUBSCRIPTION_BASE_URL = "https://sub.jc116.com"
+const val DOMESTIC_API_BASE = "https://api.52nm.de:5443"
 ```
 
 客户端使用：
@@ -188,11 +198,11 @@ shenxianyun://install-config?url=<encoded subscription url>&name=<encoded name>
 当前本地版本：
 
 ```text
-versionCode: 211036
-versionName: 2.11.36.Meta
+versionCode: 211046
+versionName: 2.11.46.Meta
 ```
 
-后台 APK 更新配置里的 `latest_version_code` 要使用 `211036` 或更高。
+52nm 后台 APK 更新配置里的 `latest_version_code` 要使用 `211046` 或更高。
 
 ## 神仙云发布与分发流程（安卓端）
 
@@ -260,30 +270,25 @@ APK 按 ABI 拆分 + 一个 universal 包，文件名形如：
 - 如需本地手动签名（不走 CI）：取 `release.keystore` 后
   `apksigner sign --ks release.keystore --ks-key-alias shenxianyun ...`。
 
-### 四、重命名后上传到 dufs 分发服务
+### 四、52nm 分发边界
 
-分发服务器：**<http://114.80.36.225:5011/sxy/>**（dufs，支持 WebDAV PUT）。
-从 Action artifact 下载 zip 解压后，按下表重命名为**固定分发名**，再用 `curl -T`（PUT）上传：
+本仓库当前只通过 GitHub Actions 生成 APK artifact，不上传或覆盖原神仙云
+Dufs。后续如果要建立 52nm 独立下载站，先配置独立存储、域名和凭据，再增加
+发布步骤。
+
+从 Action artifact 下载 zip 解压后，可按下表选择安装包：
 
 | 固定分发名 | 来源产物 |
 | --- | --- |
-| `神仙云.apk` | `cmfa-<ver>-meta-arm64-v8a-release.apk`（常用手机包） |
-| `shenxianyunall.apk` | `cmfa-<ver>-meta-universal-release.apk`（全架构通用包） |
+| 常用手机 | `cmfa-<ver>-meta-arm64-v8a-release.apk` |
+| 全架构通用 | `cmfa-<ver>-meta-universal-release.apk` |
 
-```bash
-DUFS=http://114.80.36.225:5011/sxy
-curl -T 神仙云.apk          "$DUFS/神仙云.apk"
-curl -T shenxianyunall.apk  "$DUFS/shenxianyunall.apk"
-# dufs 上传需鉴权：-u shenxianyun:shenxianyun@123（匿名只读）
-# curl -u user:pass -T 神仙云.apk "$DUFS/神仙云.apk"
-```
-
-> 桌面端的 `神仙云.exe/.dmg/.deb/.rpm` 由 PC 仓库流程产出后上传到同一目录。
+> 正式分发仍须使用原 Android 签名密钥，保证可覆盖安装。
 
 ### 五、流程速记（每次发布都照做）
 
 1. 改代码 → 改 `build.gradle.kts` 的 `versionName` / `versionCode`（code 必须递增）。
 2. `git commit` → `git push origin main`，自动触发 Build Android APK。
 3. 等 Action 跑完 → 下载 artifact `shenxianyun-android-apk` 并解压。
-4. （如需正式签名）用 `shenxianyun-keys` 里的 keystore 签名。
-5. 重命名为 `神仙云.apk` / `shenxianyunall.apk` → `curl -T` 上传到 dufs。
+4. 使用 `shenxianyun-keys` 中相同的 keystore 签名。
+5. 先真机验证；需要正式发布时再单独批准 Release/下载站步骤。
