@@ -89,6 +89,7 @@ jobs:
         if: ${{  success() }}
         with:
           tag_name: Prerelease-alpha
+          target_commitish: ${{ github.sha }}
           files: app/build/outputs/apk/alpha/release/*
           prerelease: true
           generate_release_notes: true
