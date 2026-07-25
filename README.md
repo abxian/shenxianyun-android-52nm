@@ -86,55 +86,21 @@ versionCode = 211031
 
 给用户推送 APK 更新时，后台 `latest_version_code` 必须大于用户当前安装版本的 `versionCode`。
 
-## 本地编译测试包
-
-```powershell
-cd C:\Users\fucku\Desktop\vpn\clashmeta-android
-.\gradlew.bat :app:assembleMetaDebug
-```
-
-产物路径：
-
-```text
-app/build/outputs/apk/meta/debug/
-```
-
-推荐上传通用包：
-
-```text
-cmfa-2.11.31-meta-universal-debug.apk
-```
-
-也可以按 CPU 架构分发：
-
-```text
-arm64-v8a      大部分新安卓手机
-armeabi-v7a    老安卓手机
-x86/x86_64     模拟器或少数设备
-```
-
-## 编译 Release 包
-
-需要签名文件。创建 `signing.properties`：
-
-```properties
-keystore.path=C\:\\path\\to\\shenxianyun.jks
-keystore.password=your-store-password
-key.alias=your-key-alias
-key.password=your-key-password
-```
-
-然后执行：
-
-```powershell
-.\gradlew.bat :app:assembleMetaRelease
-```
-
-如果只是本地测试或后台 APK 更新测试，可以先用 Debug 包。正式分发建议使用固定签名的 Release 包，否则用户可能无法覆盖安装。
-
 ## GitHub Actions 编译
 
-安卓仓库可以用 GitHub Actions 编译 APK。基本步骤：
+安卓端完整编译统一使用 GitHub Actions，本机只做静态检查、轻量测试和差异审查。推荐工作流是 `.github/workflows/build-apk-simple.yaml`。
+
+未准备发布时，推送隔离分支并手动编译该分支：
+
+```bash
+git push -u origin <branch>
+gh workflow run build-apk-simple.yaml --ref <branch>
+gh run list --workflow build-apk-simple.yaml --limit 1
+```
+
+这种验证不得修改 `versionName`/`versionCode`、打 tag、创建 Release、上传 Dufs 或更新后台版本元数据。Actions artifact 只是临时编译产物，不等于发布新版。
+
+工作流基本步骤：
 
 1. checkout
 2. setup JDK 21
@@ -144,7 +110,7 @@ key.password=your-key-password
 6. 执行 `./gradlew :app:assembleMetaDebug` 或 `assembleMetaRelease`
 7. 上传 `app/build/outputs/apk/meta/**.apk`
 
-私有仓库 Actions 可能受 GitHub 计费限制影响。本地编译不受影响。
+正式发布仍须使用固定签名，并在明确批准后单独执行发布流程。
 
 ## 后台接口
 
@@ -233,7 +199,7 @@ versionName: 2.11.36.Meta
 > 每次更新提交、编译、发布都要遵循以下流程。PC 桌面端流程见
 > [shenxianyun](https://github.com/abxian/shenxianyun) 的 README。
 
-### 一、改完代码后必须先升版本号
+### 一、只有准备发布时才升版本号
 
 安卓端版本号在 **`build.gradle.kts`** 一处（约第 64~65 行）：
 
@@ -244,17 +210,19 @@ versionCode = 211033
 
 - `versionName` 用语义版本（如 `2.11.33`）。
 - `versionCode` 用 `211033` 这种整数，**每次发布必须比上一次大**（后台 APK 更新检测、Play 安装升级都靠它）。
-- 升级后记得同步更新上面「当前版本」一节，以及后台的 `latest_version_code`。
+- 普通开发、预览验证和 Actions 编译不得升版本号。
+- 获得发布批准后，升级版本并同步后台 `latest_version_code`。
 
-### 二、提交并触发公开仓库 Action 编译
+### 二、提交并触发 GitHub Actions 编译
 
-Build Android APK（`.github/workflows/build-apk-simple.yaml`）在 **push 到 `main` 分支**时自动触发
-（也可在 Actions 页手动 `workflow_dispatch`）。
+Build Android APK（`.github/workflows/build-apk-simple.yaml`）支持手动 `workflow_dispatch`。
+未发布改动先在隔离分支验证；只有明确准备合入/发布时才推送 `main`。
 
 ```bash
-git add -A
+git add <本任务文件>
 git commit -m "feat: xxx (v2.11.33)"
-git push origin main      # 推送即触发 APK 构建（约 5 分钟）
+git push -u origin <branch>
+gh workflow run build-apk-simple.yaml --ref <branch>
 ```
 
 构建会拉取 clash 内核子模块、应用 Go 补丁、执行 `./gradlew app:assembleMetaRelease`，

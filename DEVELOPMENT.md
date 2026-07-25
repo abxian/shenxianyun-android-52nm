@@ -158,21 +158,18 @@ key.password=...
 - 更换签名后，用户无法直接覆盖安装旧版本。
 - GitHub Actions 如果要打 Release，需要用 GitHub Secrets 注入签名文件。
 
-## 8. 本地打包
+## 8. GitHub Actions 编译
 
-Debug：
+完整编译和 APK 打包统一使用 GitHub Actions，本机不作为正式编译结论来源。本机只运行静态检查、轻量测试和差异审查。
 
-```powershell
-cd C:\Users\fucku\Desktop\vpn\clashmeta-android
-.\gradlew.bat :app:assembleMetaDebug
+未准备发布时使用隔离分支：
+
+```bash
+git push -u origin <branch>
+gh workflow run build-apk-simple.yaml --ref <branch>
 ```
 
-Release：
-
-```powershell
-cd C:\Users\fucku\Desktop\vpn\clashmeta-android
-.\gradlew.bat :app:assembleMetaRelease
-```
+工作流 artifact 仅用于编译验证，不等于发布。没有明确发布批准时不得修改版本、打 tag、创建 Release、上传 Dufs 或更新后台版本元数据。
 
 Release 产物：
 
@@ -434,13 +431,13 @@ ExternalControlActivity.kt
 
 ## 14. Git 提交规则
 
-每次修改后必须提交并推送：
+每次修改后必须提交并推送；未准备发布时推送隔离分支：
 
 ```powershell
 git status --short
 git add <files>
 git commit -m "type: message"
-git push vpnandroid main
+git push -u origin <branch>
 ```
 
 提交类型：
@@ -452,16 +449,16 @@ git push vpnandroid main
 - `chore: ...`
 - `build: ...`
 
-提交前至少跑：
+提交前至少运行本地静态检查和差异审查：
 
-```powershell
-.\gradlew.bat :app:compileMetaDebugKotlin
+```bash
+git diff --check
 ```
 
-发布前跑：
+推送后使用 GitHub Actions 完整编译：
 
-```powershell
-.\gradlew.bat :app:assembleMetaRelease
+```bash
+gh workflow run build-apk-simple.yaml --ref <branch>
 ```
 
 不要提交：
