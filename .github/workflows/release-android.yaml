@@ -24,11 +24,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          VERSION=$(sed -n 's/^[[:space:]]*versionName = "\\([^"]*\\)"/\\1/p' build.gradle.kts | head -1)
-          CODE=$(sed -n 's/^[[:space:]]*versionCode = \\([0-9]*\\)/\\1/p' build.gradle.kts | head -1)
+          VERSION=$(sed -n 's/^[[:space:]]*versionName = "\([^"]*\)"/\1/p' build.gradle.kts | head -1)
+          CODE=$(sed -n 's/^[[:space:]]*versionCode = \([0-9]*\)/\1/p' build.gradle.kts | head -1)
+          echo "tag=$GITHUB_REF_NAME version=$VERSION versionCode=$CODE commit=$GITHUB_SHA"
           test "$GITHUB_REF_NAME" = "v$VERSION"
           test -n "$CODE"
-          git fetch origin main
+          git fetch origin main:refs/remotes/origin/main
           git merge-base --is-ancestor "$GITHUB_SHA" origin/main
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
           echo "VERSION_CODE=$CODE" >> "$GITHUB_ENV"
