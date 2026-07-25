@@ -461,6 +461,15 @@ git diff --check
 gh workflow run build-apk-simple.yaml --ref <branch>
 ```
 
+明确获准发布预览版后，使用固定预览通道：
+
+```bash
+gh workflow run build-pre-release.yaml --ref <branch>
+```
+
+`Build Pre-Release` 会发布 `Prerelease-alpha` GitHub Pre-release，并把 tag
+绑定到本次工作流的 `github.sha`。它不应更新正式版本、Dufs 或后台升级元数据。
+
 不要提交：
 
 - `local.properties`

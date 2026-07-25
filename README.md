@@ -236,6 +236,12 @@ APK 按 ABI 拆分 + 一个 universal 包，文件名形如：
 
 （`<ver>` 即 `versionName`，如 `2.11.33`；另有 armeabi-v7a / x86 / x86_64 包。）
 
+需要发布预览版时，使用 `Build Pre-Release`
+（`.github/workflows/build-pre-release.yaml`）对指定隔离分支执行
+`workflow_dispatch`。该流程构建签名的 Alpha Release APK，并更新固定的
+`Prerelease-alpha` GitHub Pre-release；tag 必须指向本次 Actions 的实际
+`github.sha`。预览发布不得替换正式 tag、Dufs 固定 APK 或后台正式升级元数据。
+
 ### 三、签名密钥（重要，要记清楚）
 
 - **签名密钥统一存放在私有仓库
