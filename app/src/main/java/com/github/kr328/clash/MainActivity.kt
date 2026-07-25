@@ -53,6 +53,12 @@ import com.github.kr328.clash.design.R
 
 class MainActivity : BaseActivity<MainDesign>() {
     private var selectedMode = TunnelState.Mode.Rule
+    private enum class TrafficReportResult {
+        Success,
+        CounterReset,
+        Limited,
+        Failure,
+    }
 
     private companion object {
         const val ACTIVATION_STORE = ACTIVATION_STORE_NAME
@@ -99,6 +105,10 @@ class MainActivity : BaseActivity<MainDesign>() {
         var lastHeartbeatAt = 0L
         var lastTrafficReportAt = 0L
         var lastReportedTrafficTotal: Long? = null
+        var trafficCounterId = UUID.randomUUID().toString()
+        var trafficCounterSequence = 0L
+        var trafficCounterBase = 0L
+        var pendingTrafficTotal: Long? = null
         // 订阅更新轮询：在途互斥 + 失败指数退避（叠加抖动），避免 web 掉线恢复后惊群打满服务器。
         var subscriptionUpdateInFlight = false
         var subscriptionFailures = 0
@@ -115,6 +125,10 @@ class MainActivity : BaseActivity<MainDesign>() {
                         Event.ServiceRecreated,
                         Event.ProfileLoaded, Event.ProfileChanged -> launch { design.safeFetch() }
                         Event.ClashStart -> {
+                            trafficCounterId = UUID.randomUUID().toString()
+                            trafficCounterSequence = 0L
+                            trafficCounterBase = 0L
+                            pendingTrafficTotal = null
                             launch { design.safeFetch() }
                             launch { sendClientHeartbeat("online") }
                         }
@@ -123,6 +137,7 @@ class MainActivity : BaseActivity<MainDesign>() {
                             lastHeartbeatAt = 0L
                             lastTrafficReportAt = 0L
                             lastReportedTrafficTotal = null
+                            pendingTrafficTotal = null
                             launch { sendClientHeartbeat("offline") }
                         }
                         else -> Unit
@@ -191,6 +206,7 @@ class MainActivity : BaseActivity<MainDesign>() {
                             .getOrElse { lastReportedTrafficTotal ?: 0L }
                         if (lastReportedTrafficTotal == null) {
                             lastReportedTrafficTotal = trafficTotal
+                            trafficCounterBase = trafficTotal
                         }
                         if (now - lastHeartbeatAt >= HEARTBEAT_INTERVAL_MILLIS) {
                             lastHeartbeatAt = now
@@ -199,11 +215,37 @@ class MainActivity : BaseActivity<MainDesign>() {
                         if (now - lastTrafficReportAt >= TRAFFIC_REPORT_INTERVAL_MILLIS) {
                             val previous = lastReportedTrafficTotal ?: trafficTotal
                             val delta = (trafficTotal - previous).coerceAtLeast(0L)
+                            val cumulative = (trafficTotal - trafficCounterBase).coerceAtLeast(0L)
                             lastTrafficReportAt = now
                             if (delta > 0L && delta <= MAX_TRAFFIC_REPORT_DELTA_BYTES) {
+                                val reportTotal = pendingTrafficTotal ?: cumulative
+                                val reportSequence = trafficCounterSequence + 1L
+                                pendingTrafficTotal = reportTotal
                                 launch {
-                                    if (sendClientTraffic(delta)) {
-                                        lastReportedTrafficTotal = trafficTotal
+                                    when (
+                                        sendClientTraffic(
+                                            delta,
+                                            trafficCounterId,
+                                            reportSequence,
+                                            reportTotal,
+                                        )
+                                    ) {
+                                        TrafficReportResult.Success -> {
+                                            trafficCounterSequence = reportSequence
+                                            pendingTrafficTotal = null
+                                            lastReportedTrafficTotal = trafficTotal
+                                        }
+                                        TrafficReportResult.CounterReset -> {
+                                            trafficCounterId = UUID.randomUUID().toString()
+                                            trafficCounterSequence = 0L
+                                            trafficCounterBase = trafficTotal
+                                            pendingTrafficTotal = null
+                                            lastReportedTrafficTotal = trafficTotal
+                                        }
+                                        TrafficReportResult.Limited -> {
+                                            pendingTrafficTotal = null
+                                        }
+                                        TrafficReportResult.Failure -> Unit
                                     }
                                 }
                             } else if (delta > MAX_TRAFFIC_REPORT_DELTA_BYTES) {
@@ -299,6 +341,54 @@ class MainActivity : BaseActivity<MainDesign>() {
             return@withContext
         }
         val appVersion = queryAppVersionName().asHeaderValue()
+        val credentials = loadManagedCredentials()
+            ?.takeIf { it.accessCode == code }
+        if (credentials != null) {
+            val path = if (status == "offline") "offline" else "heartbeat"
+            val body = JSONObject().apply {
+                put("platform", "安卓手机")
+                put("app_name", "神仙云安卓端")
+                put("app_version", appVersion)
+                put("device_name", "${Build.BRAND} ${Build.MODEL}")
+            }.toString().toByteArray(Charsets.UTF_8)
+            val connection = (URL("${credentials.apiBase}/api/v2/client/$path").openConnection() as HttpURLConnection).apply {
+                connectTimeout = 5000
+                readTimeout = 5000
+                requestMethod = "POST"
+                doOutput = true
+                setRequestProperty("Authorization", "Bearer ${credentials.deviceToken}")
+                setRequestProperty("Content-Type", "application/json")
+                setRequestProperty("User-Agent", "Shenxianyun-Android/$appVersion")
+                setRequestProperty("X-Client-Id", stableClientId())
+            }
+            try {
+                connection.outputStream.use { it.write(body) }
+                val statusCode = connection.responseCode
+                val stream = if (statusCode in 200..299) {
+                    connection.inputStream
+                } else {
+                    connection.errorStream
+                }
+                val json = runCatching {
+                    JSONObject(stream?.bufferedReader()?.use { it.readText() }.orEmpty())
+                }.getOrNull()
+                if (
+                    status != "offline" &&
+                    statusCode == 403 &&
+                    (json?.optString("code") == "device_limit" ||
+                        json?.optString("code") == "traffic_limit")
+                ) {
+                    enforceClientLimit(
+                        json?.optString("message", "套餐设备或流量额度已达到上限")
+                            ?: "套餐设备或流量额度已达到上限",
+                    )
+                }
+            } catch (_: Exception) {
+            } finally {
+                connection.disconnect()
+            }
+            return@withContext
+        }
         val encoded = URLEncoder.encode(code, "UTF-8").replace("+", "%20")
         val path = if (status == "offline") "offline" else "heartbeat"
         val params = listOf(
@@ -323,12 +413,71 @@ class MainActivity : BaseActivity<MainDesign>() {
         }
     }
 
-    private suspend fun sendClientTraffic(deltaBytes: Long): Boolean = withContext(Dispatchers.IO) {
+    private suspend fun sendClientTraffic(
+        deltaBytes: Long,
+        counterId: String,
+        sequence: Long,
+        cumulativeBytes: Long,
+    ): TrafficReportResult = withContext(Dispatchers.IO) {
         val code = savedActivationCode()
         if (code.isBlank() || deltaBytes <= 0L) {
-            return@withContext false
+            return@withContext TrafficReportResult.Failure
         }
         val appVersion = queryAppVersionName().asHeaderValue()
+        val credentials = loadManagedCredentials()
+            ?.takeIf { it.accessCode == code }
+        if (credentials != null) {
+            val body = JSONObject().apply {
+                put("counter_id", counterId)
+                put("sequence", sequence)
+                put("upload_total", 0L)
+                put("download_total", cumulativeBytes)
+                put("platform", "安卓手机")
+                put("app_name", "神仙云安卓端")
+                put("app_version", appVersion)
+                put("device_name", "${Build.BRAND} ${Build.MODEL}")
+            }.toString().toByteArray(Charsets.UTF_8)
+            val connection = (URL("${credentials.apiBase}/api/v2/client/traffic").openConnection() as HttpURLConnection).apply {
+                connectTimeout = 5000
+                readTimeout = 5000
+                requestMethod = "POST"
+                doOutput = true
+                setRequestProperty("Authorization", "Bearer ${credentials.deviceToken}")
+                setRequestProperty("Content-Type", "application/json")
+                setRequestProperty("User-Agent", "Shenxianyun-Android/$appVersion")
+                setRequestProperty("X-Client-Id", stableClientId())
+            }
+            try {
+                connection.outputStream.use { it.write(body) }
+                val statusCode = connection.responseCode
+                val stream = if (statusCode in 200..299) {
+                    connection.inputStream
+                } else {
+                    connection.errorStream
+                }
+                val json = runCatching {
+                    JSONObject(stream?.bufferedReader()?.use { it.readText() }.orEmpty())
+                }.getOrNull()
+                when {
+                    statusCode in 200..299 && json?.optBoolean("ok", false) == true ->
+                        TrafficReportResult.Success
+                    statusCode == 409 && json?.optString("code") == "counter_reset" ->
+                        TrafficReportResult.CounterReset
+                    statusCode == 403 && json?.optString("code") == "traffic_limit" -> {
+                        enforceClientLimit(
+                            json?.optString("message", "流量额度已用尽，代理已停止")
+                                ?: "流量额度已用尽，代理已停止",
+                        )
+                        TrafficReportResult.Limited
+                    }
+                    else -> TrafficReportResult.Failure
+                }
+            } catch (_: Exception) {
+                TrafficReportResult.Failure
+            } finally {
+                connection.disconnect()
+            }
+        } else {
         val encoded = URLEncoder.encode(code, "UTF-8").replace("+", "%20")
         val body = JSONObject().apply {
             put("client_id", stableClientId())
@@ -350,11 +499,23 @@ class MainActivity : BaseActivity<MainDesign>() {
         }
         try {
             connection.outputStream.use { it.write(body) }
-            connection.responseCode in 200..299
+            if (connection.responseCode in 200..299) {
+                TrafficReportResult.Success
+            } else {
+                TrafficReportResult.Failure
+            }
         } catch (_: Exception) {
-            false
+            TrafficReportResult.Failure
         } finally {
             connection.disconnect()
+        }
+        }
+    }
+
+    private suspend fun enforceClientLimit(message: String) {
+        withContext(Dispatchers.Main) {
+            stopClashService()
+            design?.showToast(message, ToastDuration.Long)
         }
     }
 
@@ -499,62 +660,75 @@ class MainActivity : BaseActivity<MainDesign>() {
                 showToast(R.string.import_code_fetching, ToastDuration.Long)
             }
 
-            val verifyJson = verifyActivationCode(code, countImport = !silent) { retry ->
-                if (!silent) {
-                    showToast(
-                        getString(
-                            R.string.import_code_retrying,
-                            retry,
-                            SUBSCRIPTION_NETWORK_RETRIES,
-                        ),
-                        ToastDuration.Long,
-                    )
+            val existing = loadManagedCredentials()
+                ?.takeIf { it.accessCode == code }
+            var credentials = if (silent && existing != null) {
+                existing
+            } else {
+                var lastError: Exception? = null
+                var exchanged: ManagedCredentials? = null
+                for (attempt in 0 until SUBSCRIPTION_NETWORK_ATTEMPTS) {
+                    if (attempt > 0) {
+                        if (!silent) {
+                            showToast(
+                                getString(
+                                    R.string.import_code_retrying,
+                                    attempt,
+                                    SUBSCRIPTION_NETWORK_RETRIES,
+                                ),
+                                ToastDuration.Long,
+                            )
+                        }
+                        delay(subscriptionRetryDelayMillis(attempt))
+                        EndpointResolver.rotate()
+                    }
+                    try {
+                        val apiBase = EndpointResolver.apiBase()
+                        val ticket = issueManagedImportTicket(code, apiBase)
+                        exchanged = exchangeManagedImportTicket(
+                            ticket,
+                            apiBase,
+                            stableClientId(),
+                        ).copy(accessCode = code)
+                        break
+                    } catch (e: Exception) {
+                        lastError = e
+                    }
                 }
+                exchanged ?: throw (
+                    lastError ?: IllegalStateException("Unable to exchange import ticket")
+                )
             }
-            if (!verifyJson.optBoolean("ok", false)) {
-                if (!silent) {
-                    showToast(R.string.import_code_invalid, ToastDuration.Long)
-                }
-                return
-            }
-            val expiresAt = verifyJson.optString("expires_at", "")
-            if (isExpired(expiresAt)) {
+            if (isExpired(credentials.expiresAt)) {
                 if (!silent) {
                     showToast(R.string.import_code_expired, ToastDuration.Long)
                 }
                 return
             }
-            val url = verifyJson.optString("subscription_url", "").trim()
-            if (url.isBlank()) {
-                throw IllegalStateException("Web backend did not return subscription_url")
+            val content = try {
+                fetchManagedSubscription(credentials)
+            } catch (error: Exception) {
+                if (!silent || existing == null) throw error
+                val apiBase = existing.apiBase.ifBlank { EndpointResolver.apiBase() }
+                val ticket = issueManagedImportTicket(code, apiBase)
+                credentials = exchangeManagedImportTicket(
+                    ticket,
+                    apiBase,
+                    stableClientId(),
+                ).copy(accessCode = code)
+                fetchManagedSubscription(credentials)
             }
-            val name = MANAGED_PROFILE_NAME
-
-            val uuid = withProfile {
-                val savedUuid = activationStore()
-                    .getString(KEY_PROFILE_UUID, null)
-                    ?.let { runCatching { UUID.fromString(it) }.getOrNull() }
-                if (savedUuid != null && queryByUUID(savedUuid) != null) {
-                    savedUuid
-                } else {
-                    create(Profile.Type.Url, name)
-                }
-            }
-            // 先登记 UUID：即使首次下载遇到瞬时断网，后续重试也复用同一配置，
-            // 设置页同时能立即把它识别为受管配置，不会暴露真实订阅地址。
+            val uuid = installManagedProfile(code, content)
+            saveManagedCredentials(credentials)
+            val expiresAt = credentials.expiresAt
+            val updateVersion = queryUpdateVersion(code)
+                ?: activationStore().getLong(KEY_UPDATE_VERSION, 0L)
             activationStore().edit()
                 .putString(KEY_CODE, code)
                 .putString(KEY_EXPIRES_AT, expiresAt)
                 .putString(KEY_PROFILE_UUID, uuid.toString())
+                .putLong(KEY_UPDATE_VERSION, updateVersion)
                 .apply()
-
-            commitManagedProfileWithRetry(uuid, name, url, silent)
-
-            verifyJson.optLong("update_version", 0).takeIf { it > 0 }?.let { version ->
-                activationStore().edit()
-                    .putLong(KEY_UPDATE_VERSION, version)
-                    .apply()
-            }
             fetch()
             showToast(
                 if (silent) R.string.subscription_updated else R.string.import_code_success,
@@ -565,43 +739,6 @@ class MainActivity : BaseActivity<MainDesign>() {
                 showToast(R.string.import_code_failed_after_retries, ToastDuration.Long)
             }
         }
-    }
-
-    private suspend fun MainDesign.commitManagedProfileWithRetry(
-        uuid: UUID,
-        name: String,
-        url: String,
-        silent: Boolean,
-    ) {
-        var lastError: Exception? = null
-        repeat(SUBSCRIPTION_NETWORK_ATTEMPTS) { attempt ->
-            if (attempt > 0) {
-                if (!silent) {
-                    showToast(
-                        getString(
-                            R.string.import_code_retrying,
-                            attempt,
-                            SUBSCRIPTION_NETWORK_RETRIES,
-                        ),
-                        ToastDuration.Long,
-                    )
-                }
-                delay(subscriptionRetryDelayMillis(attempt))
-            }
-
-            try {
-                withProfile {
-                    patch(uuid, name, url, 0)
-                    commit(uuid, null)
-                    queryByUUID(uuid)?.let { setActive(it) }
-                }
-                return
-            } catch (e: Exception) {
-                lastError = e
-            }
-        }
-
-        throw lastError ?: IllegalStateException("Unable to import subscription")
     }
 
     private suspend fun MainDesign.startClash() {
@@ -669,80 +806,6 @@ class MainActivity : BaseActivity<MainDesign>() {
             "${EndpointResolver.apiBase()}/pay?action=renew&code=$encoded"
         }
         startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
-    }
-
-    private suspend fun verifyActivationCode(
-        code: String,
-        countImport: Boolean = false,
-        onRetry: suspend (Int) -> Unit = {},
-    ): JSONObject {
-        var lastError: Exception? = null
-
-        repeat(SUBSCRIPTION_NETWORK_ATTEMPTS) { attempt ->
-            if (attempt > 0) {
-                onRetry(attempt)
-                delay(subscriptionRetryDelayMillis(attempt))
-                // 当前 API 线路失联（如主域名挂掉）：切到下一条可用线路重试。
-                EndpointResolver.rotate()
-            }
-
-            try {
-                // 最后一层经后台下发的兜底代理验证，解决直连全挂或首装连不上。
-                return verifyActivationCodeOnce(
-                    code,
-                    countImport,
-                    useBootstrap = attempt == SUBSCRIPTION_NETWORK_ATTEMPTS - 1,
-                )
-            } catch (e: Exception) {
-                lastError = e
-            }
-        }
-
-        throw lastError ?: IllegalStateException("Unable to verify subscription code")
-    }
-
-    private suspend fun verifyActivationCodeOnce(
-        code: String,
-        countImport: Boolean,
-        useBootstrap: Boolean,
-    ): JSONObject = withContext(Dispatchers.IO) {
-        val encoded = URLEncoder.encode(code, "UTF-8").replace("+", "%20")
-        val importParams = if (countImport) {
-            "?import=1&client_id=${URLEncoder.encode(stableClientId(), "UTF-8")}"
-        } else {
-            ""
-        }
-        val url = "${EndpointResolver.apiBase()}/api/verify/$encoded$importParams"
-        // useBootstrap=true 时经兜底代理打开；代理没配置则退回直连。
-        val connection = (if (useBootstrap) EndpointResolver.openViaBootstrap(url, 8000) else null)
-            ?: (URL(url).openConnection() as HttpURLConnection).apply {
-                connectTimeout = 8000
-                readTimeout = 8000
-                requestMethod = "GET"
-            }
-        connection.setRequestProperty("X-Client-Id", stableClientId())
-
-        try {
-            if (connection.responseCode !in 200..299) {
-                return@withContext JSONObject().put("ok", false)
-            }
-
-            val body = connection.inputStream.bufferedReader().use { it.readText() }
-            val json = JSONObject(body)
-            val ok = json.optBoolean("ok", false)
-            val expiresAt = json.optString("expires_at", "")
-
-            activationStore().edit()
-                .putString(KEY_EXPIRES_AT, expiresAt)
-                .apply()
-
-            if (!ok || isExpired(expiresAt)) {
-                json.put("ok", false)
-            }
-            json
-        } finally {
-            connection.disconnect()
-        }
     }
 
     private suspend fun queryUpdateVersion(code: String): Long? = withContext(Dispatchers.IO) {
@@ -902,43 +965,34 @@ class MainActivity : BaseActivity<MainDesign>() {
         fetch()
     }
 
-    // 续费恢复：重新校验提取码（不计入导入次数），成功则重新导入正式订阅并删除占位配置。
+    // 续费恢复：签发一次性票据并轮换设备凭据，成功后替换正式订阅并删除占位配置。
     private suspend fun MainDesign.recoverFromExpired(code: String) {
-        val verifyJson = verifyActivationCode(code, countImport = false)
-        if (!verifyJson.optBoolean("ok", false)) {
-            return
-        }
-        val url = verifyJson.optString("subscription_url", "").trim()
-        if (url.isBlank()) {
-            return
-        }
-        val expiresAt = verifyJson.optString("expires_at", "")
-        val name = MANAGED_PROFILE_NAME
+        val apiBase = loadManagedCredentials()?.apiBase
+            ?.ifBlank { EndpointResolver.apiBase() }
+            ?: EndpointResolver.apiBase()
+        val ticket = issueManagedImportTicket(code, apiBase)
+        val credentials = exchangeManagedImportTicket(
+            ticket,
+            apiBase,
+            stableClientId(),
+        ).copy(accessCode = code)
+        if (isExpired(credentials.expiresAt)) return
+        val content = fetchManagedSubscription(credentials)
         val expiredUuid = expiredProfileUuid()
+        val uuid = installManagedProfile(code, content)
+        saveManagedCredentials(credentials)
         withProfile {
-            val savedUuid = activationStore().getString(KEY_PROFILE_UUID, null)
-                ?.let { runCatching { UUID.fromString(it) }.getOrNull() }
-            val uuid = if (savedUuid != null && savedUuid != expiredUuid && queryByUUID(savedUuid) != null) {
-                savedUuid
-            } else {
-                create(Profile.Type.Url, name)
-            }
-            patch(uuid, name, url, 0)
-            commit(uuid, null)
-            queryByUUID(uuid)?.let { setActive(it) }
             if (expiredUuid != null) {
                 runCatching { delete(expiredUuid) }
             }
-            activationStore().edit()
-                .putString(KEY_CODE, code)
-                .putString(KEY_EXPIRES_AT, expiresAt)
-                .putString(KEY_PROFILE_UUID, uuid.toString())
-                .remove(KEY_EXPIRED_PROFILE_UUID)
-                .apply()
         }
-        verifyJson.optLong("update_version", 0).takeIf { it > 0 }?.let { version ->
-            activationStore().edit().putLong(KEY_UPDATE_VERSION, version).apply()
-        }
+        activationStore().edit()
+            .putString(KEY_CODE, code)
+            .putString(KEY_EXPIRES_AT, credentials.expiresAt)
+            .putString(KEY_PROFILE_UUID, uuid.toString())
+            .putLong(KEY_UPDATE_VERSION, queryUpdateVersion(code) ?: 0L)
+            .remove(KEY_EXPIRED_PROFILE_UUID)
+            .apply()
         fetch()
         showToast(R.string.subscription_recovered, ToastDuration.Long)
     }

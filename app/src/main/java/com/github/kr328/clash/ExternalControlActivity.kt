@@ -6,28 +6,15 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import android.widget.Toast
-import androidx.activity.result.contract.ActivityResultContracts
 import com.github.kr328.clash.common.constants.Intents
-import com.github.kr328.clash.common.util.intent
-import com.github.kr328.clash.common.util.setUUID
-import com.github.kr328.clash.design.MainDesign
-import com.github.kr328.clash.design.ui.ToastDuration
 import com.github.kr328.clash.remote.Remote
-import com.github.kr328.clash.remote.StatusClient
 import com.github.kr328.clash.service.model.Profile
 import com.github.kr328.clash.util.startClashService
 import com.github.kr328.clash.util.stopClashService
 import com.github.kr328.clash.util.withProfile
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.MainScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import org.json.JSONObject
-import java.net.HttpURLConnection
-import java.net.URL
-import java.net.URLEncoder
 import java.util.*
 import com.github.kr328.clash.design.R
 
@@ -49,11 +36,10 @@ class ExternalControlActivity : Activity(), CoroutineScope by MainScope() {
         when(intent.action) {
             Intent.ACTION_VIEW -> {
                 val uri = intent.data ?: return finish()
-                val url = uri.getQueryParameter("url") ?: return finish()
 
                 launch {
                     try {
-                        importShenxianyunSubscription(uri, url)
+                        importShenxianyunSubscription(uri)
                         Toast.makeText(this@ExternalControlActivity, R.string.import_code_success, Toast.LENGTH_LONG).show()
                         startActivity(Intent(this@ExternalControlActivity, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP))
                     } catch (e: Exception) {
@@ -93,43 +79,47 @@ class ExternalControlActivity : Activity(), CoroutineScope by MainScope() {
         return finish()
     }
 
-    private suspend fun importShenxianyunSubscription(uri: Uri, url: String) {
+    private suspend fun importShenxianyunSubscription(uri: Uri) {
+        val ticket = uri.getQueryParameter("ticket")?.trim().orEmpty()
+        val url = uri.getQueryParameter("url")?.trim().orEmpty()
+        if (ticket.isBlank() && url.isBlank()) {
+            throw IllegalArgumentException("Missing import ticket")
+        }
         val code = extractCodeFromSubscriptionUrl(url)
-        if (code.isBlank()) {
+        if (ticket.isBlank() && code.isBlank()) {
             importExternalSubscription(uri, url)
             return
         }
 
-        val verify = verifyActivationCode(code)
-        val secureUrl = verify.optString("subscription_url", "").trim()
-        if (secureUrl.isBlank()) {
-            throw IllegalStateException("Web backend did not return subscription_url")
-        }
-        val name = uri.getQueryParameter("name")?.takeIf { it.isNotBlank() }
-            ?: MANAGED_PROFILE_NAME
-        val uuid = withProfile {
-            val savedUuid = activationStore()
-                .getString(KEY_PROFILE_UUID, null)
-                ?.let { runCatching { UUID.fromString(it) }.getOrNull() }
-            val profileUuid = if (savedUuid != null && queryByUUID(savedUuid) != null) {
-                savedUuid
-            } else {
-                create(Profile.Type.Url, name)
+        val apiBase = uri.getQueryParameter("api")
+            ?.trim()
+            ?.trimEnd('/')
+            ?.takeIf {
+                val scheme = Uri.parse(it).scheme
+                scheme == "https" || scheme == "http"
             }
-            profileUuid
+            ?: EndpointResolver.apiBase()
+        val clientId = stableClientId()
+        val credentials = if (ticket.isNotBlank()) {
+            exchangeManagedImportTicket(ticket, apiBase, clientId)
+        } else {
+            val issued = issueManagedImportTicket(code, apiBase)
+            exchangeManagedImportTicket(issued, apiBase, clientId)
         }
-
-        val expiresAt = verify.optString("expires_at", "")
-        val updateVersion = verify.optLong("update_version", 0L)
-        // 先保存受管配置身份，下载失败后的自动重试始终复用同一个 UUID。
+        val accessCode = credentials.accessCode.ifBlank {
+            uri.getQueryParameter("name")?.trim().orEmpty().ifBlank { code }
+        }
+        if (accessCode.isBlank()) throw IllegalStateException("安全导入未返回提取码")
+        val normalized = credentials.copy(accessCode = accessCode)
+        val content = fetchManagedSubscription(normalized)
+        val uuid = installManagedProfile(accessCode, content)
+        saveManagedCredentials(normalized)
         activationStore().edit()
-            .putString(KEY_CODE, code)
+            .putString(KEY_CODE, accessCode)
             .putString(KEY_PROFILE_UUID, uuid.toString())
-            .putString(KEY_EXPIRES_AT, expiresAt)
-            .putLong(KEY_UPDATE_VERSION, updateVersion)
+            .putString(KEY_EXPIRES_AT, normalized.expiresAt)
+            .putLong(KEY_UPDATE_VERSION, 0L)
             .apply()
-
-        commitManagedProfileWithRetry(uuid, name, secureUrl)
     }
 
     private suspend fun importExternalSubscription(uri: Uri, url: String) {
@@ -159,77 +149,6 @@ class ExternalControlActivity : Activity(), CoroutineScope by MainScope() {
             return segments[subIndex + 1].trim()
         }
         return ""
-    }
-
-    private suspend fun verifyActivationCode(code: String): JSONObject {
-        var lastError: Exception? = null
-
-        repeat(SUBSCRIPTION_NETWORK_ATTEMPTS) { attempt ->
-            if (attempt > 0) {
-                delay(subscriptionRetryDelayMillis(attempt))
-                EndpointResolver.rotate()
-            }
-
-            try {
-                return verifyActivationCodeOnce(
-                    code,
-                    useBootstrap = attempt == SUBSCRIPTION_NETWORK_ATTEMPTS - 1,
-                )
-            } catch (e: Exception) {
-                lastError = e
-            }
-        }
-
-        throw lastError ?: IllegalStateException("Unable to verify subscription code")
-    }
-
-    private suspend fun commitManagedProfileWithRetry(uuid: UUID, name: String, url: String) {
-        var lastError: Exception? = null
-
-        repeat(SUBSCRIPTION_NETWORK_ATTEMPTS) { attempt ->
-            if (attempt > 0) {
-                delay(subscriptionRetryDelayMillis(attempt))
-            }
-
-            try {
-                withProfile {
-                    patch(uuid, name, url, 0)
-                    commit(uuid, null)
-                    queryByUUID(uuid)?.let { setActive(it) }
-                }
-                return
-            } catch (e: Exception) {
-                lastError = e
-            }
-        }
-
-        throw lastError ?: IllegalStateException("Unable to import subscription")
-    }
-
-    private suspend fun verifyActivationCodeOnce(code: String, useBootstrap: Boolean): JSONObject = withContext(Dispatchers.IO) {
-        val encoded = URLEncoder.encode(code, "UTF-8").replace("+", "%20")
-        val clientId = stableClientId()
-        val url = "${EndpointResolver.apiBase()}/api/verify/$encoded?import=1&client_id=${URLEncoder.encode(clientId, "UTF-8")}"
-        val connection = (if (useBootstrap) EndpointResolver.openViaBootstrap(url, 8000) else null)
-            ?: (URL(url).openConnection() as HttpURLConnection).apply {
-                connectTimeout = 8000
-                readTimeout = 8000
-                requestMethod = "GET"
-            }
-        connection.setRequestProperty("User-Agent", "Shenxianyun-Android/ExternalImport")
-        connection.setRequestProperty("X-Client-Id", clientId)
-        try {
-            if (connection.responseCode !in 200..299) {
-                throw IllegalStateException(getString(R.string.import_code_invalid))
-            }
-            val json = JSONObject(connection.inputStream.bufferedReader().use { it.readText() })
-            if (!json.optBoolean("ok", false)) {
-                throw IllegalStateException(json.optString("message", getString(R.string.import_code_invalid)))
-            }
-            json
-        } finally {
-            connection.disconnect()
-        }
     }
 
     private fun stableClientId(): String {
