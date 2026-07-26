@@ -481,6 +481,9 @@ git push origin v<versionName>
 `Release Android`（`.github/workflows/release-android.yaml`）会强制使用
 Actions Secrets 中的正式签名，发布到本 52nm 仓库的非预发布 GitHub Release；
 不得上传旧神仙云 Dufs 或改动旧客户端仓库。
+应用显示名称可以使用中文“吾爱云”，但 `android.artifact.basename` 必须使用
+小写 ASCII；GitHub 会改写中文资产名。当前固定别名为 `wuaiyun.apk` 和
+`wuaiyunall.apk`。
 
 不要提交：
 

@@ -125,6 +125,8 @@ gh run list --workflow build-apk-simple.yaml --limit 1
 正式发布使用 `.github/workflows/release-android.yaml`：版本提交必须位于
 `main`，推送与 `versionName` 完全一致的 `v*.*.*` 标签后，工作流强制检查
 4 个签名 Secret、构建 Meta Release APK，并创建非预发布的 GitHub Release。
+应用内品牌保持“吾爱云”；GitHub 会改写中文 Release 资产名，因此固定下载
+别名使用 `wuaiyun.apk` 和 `wuaiyunall.apk`，避免生成 `a.c.a.apk` 一类乱码名。
 
 ## 后台接口
 
@@ -285,8 +287,8 @@ Release，不上传或覆盖原神仙云 Dufs，也不写入旧客户端仓库�
 
 | 固定分发名 | 来源产物 |
 | --- | --- |
-| 常用手机 | `cmfa-<ver>-meta-arm64-v8a-release.apk` |
-| 全架构通用 | `cmfa-<ver>-meta-universal-release.apk` |
+| `wuaiyun.apk`（常用手机） | `cmfa-<ver>-meta-arm64-v8a-release.apk` |
+| `wuaiyunall.apk`（全架构通用） | `cmfa-<ver>-meta-universal-release.apk` |
 
 > 正式分发仍须使用原 Android 签名密钥，保证可覆盖安装。
 

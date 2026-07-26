@@ -23,10 +23,9 @@ require("{code}" in siteProfileValue("subscription.name.template")) {
     "subscription.name.template must contain {code}"
 }
 require(
-    siteProfileValue("android.artifact.basename").length <= 64 &&
-        !Regex("""[\\/:*?"<>|\u0000-\u001f]""").containsMatchIn(siteProfileValue("android.artifact.basename"))
+    Regex("^[a-z0-9][a-z0-9._-]{0,63}$").matches(siteProfileValue("android.artifact.basename"))
 ) {
-    "android.artifact.basename must be a safe file basename"
+    "android.artifact.basename must be a lowercase ASCII file basename"
 }
 listOf("api.domestic.base", "api.bases", "discovery.urls").forEach { key ->
     siteProfileValue(key).split(',').map(String::trim).filter(String::isNotEmpty).forEach {
