@@ -1,4 +1,4 @@
-# 神仙云 Android 客户端开发文档
+# 吾爱云 Android 52nm 客户端开发文档
 
 本文档用于 `vpnandroid` 仓库后续开发维护。项目基于 Clash Meta for Android 改造，保留原版 VPN 服务能力，同时把入口改成提取码订阅。
 

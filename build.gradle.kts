@@ -22,8 +22,11 @@ require(Regex("^[a-z][a-z0-9+.-]{1,31}$").matches(siteProfileValue("deep.link.sc
 require("{code}" in siteProfileValue("subscription.name.template")) {
     "subscription.name.template must contain {code}"
 }
-require(Regex("^[A-Za-z0-9._-]+$").matches(siteProfileValue("android.artifact.basename"))) {
-    "android.artifact.basename may only contain letters, numbers, dot, underscore and dash"
+require(
+    siteProfileValue("android.artifact.basename").length <= 64 &&
+        !Regex("""[\\/:*?"<>|\u0000-\u001f]""").containsMatchIn(siteProfileValue("android.artifact.basename"))
+) {
+    "android.artifact.basename must be a safe file basename"
 }
 listOf("api.domestic.base", "api.bases", "discovery.urls").forEach { key ->
     siteProfileValue(key).split(',').map(String::trim).filter(String::isNotEmpty).forEach {
@@ -89,8 +92,8 @@ subprojects {
             minSdk = 21
             targetSdk = 35
 
-            versionName = "2.11.46"
-            versionCode = 211046
+            versionName = "2.11.47"
+            versionCode = 211047
 
             resValue("string", "release_name", "v$versionName")
             resValue("integer", "release_code", "$versionCode")

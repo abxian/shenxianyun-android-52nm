@@ -1,6 +1,6 @@
-# 神仙云 Android 客户端
+# 吾爱云 Android 客户端
 
-这是神仙云安卓客户端，基于 Clash Meta for Android 改造。目标是保留稳定的原版 VPN/TUN 开关和 Mihomo 内核能力，同时把使用流程简化为提取码订阅、一键启动、节点选择。
+这是吾爱云安卓客户端，基于 Clash Meta for Android 改造。目标是保留稳定的原版 VPN/TUN 开关和 Mihomo 内核能力，同时把使用流程简化为提取码订阅、一键启动、节点选择。
 
 统一品牌、应用身份和连接地址配置见 `docs/SITE_PROFILE.md`。
 
@@ -202,11 +202,11 @@ shenxianyun://install-config?url=<encoded subscription url>&name=<encoded name>
 当前本地版本：
 
 ```text
-versionCode: 211046
-versionName: 2.11.46.Meta
+versionCode: 211047
+versionName: 2.11.47.Meta
 ```
 
-52nm 后台 APK 更新配置里的 `latest_version_code` 要使用 `211046` 或更高。
+52nm 后台 APK 更新配置里的 `latest_version_code` 要使用 `211047` 或更高。
 
 ## 神仙云发布与分发流程（安卓端）
 

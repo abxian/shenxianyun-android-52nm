@@ -90,12 +90,12 @@ jobs:
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v3
         with:
-          name: 神仙云 Android 52nm v${{ env.VERSION }}
+          name: 吾爱云 Android 52nm v${{ env.VERSION }}
           tag_name: ${{ github.ref_name }}
           target_commitish: ${{ github.sha }}
           prerelease: false
           generate_release_notes: true
-          body_path: docs/RELEASE_2.11.46.md
+          body_path: docs/RELEASE_2.11.47.md
           files: |
             app/build/outputs/apk/meta/release/*.apk
             app/build/outputs/apk/meta/release/output-metadata.json
