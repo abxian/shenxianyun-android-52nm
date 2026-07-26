@@ -96,7 +96,7 @@ dependencies {
 
 afterEvaluate {
     tasks.withType(GolangBuildTask::class.java).forEach {
-        dependsOn(generateSiteProfileGo)
+        it.dependsOn(generateSiteProfileGo)
         it.inputs.dir(golangSource)
         it.inputs.file(siteProfileFile)
     }
