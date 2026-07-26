@@ -2,6 +2,8 @@
 
 这是神仙云安卓客户端，基于 Clash Meta for Android 改造。目标是保留稳定的原版 VPN/TUN 开关和 Mihomo 内核能力，同时把使用流程简化为提取码订阅、一键启动、节点选择。
 
+统一品牌、应用身份和连接地址配置见 `docs/SITE_PROFILE.md`。
+
 ## 52nm 域名配置
 
 本仓库绑定 52nm 独立 vpn-web：
@@ -238,7 +240,7 @@ gh workflow run build-apk-simple.yaml --ref <branch>
 ```
 
 构建会拉取 clash 内核子模块、应用 Go 补丁、执行 `./gradlew app:assembleMetaRelease`，
-产物作为 **workflow artifact `shenxianyun-android-apk`** 上传（非 GitHub Release）。
+产物作为 **workflow artifact `<仓库名>-apk`** 上传（非 GitHub Release）。
 APK 按 ABI 拆分 + 一个 universal 包，文件名形如：
 
 | 用途 | Action 产物文件名 |

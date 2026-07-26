@@ -310,15 +310,15 @@ class MainActivity : BaseActivity<MainDesign>() {
             }
         }
         val items = bases.mapIndexed { i, base ->
-            MainDesign.LineItem("神仙云${i + 1}", results[i], base == active)
+            MainDesign.LineItem("${EndpointResolver.clientName()}${i + 1}", results[i], base == active)
         }
         val picked = design.showLineSelector(items)
         if (picked != null && picked in bases.indices) {
             if (results[picked]) {
                 EndpointResolver.setActive(bases[picked])
-                design.showToast("已切换到神仙云${picked + 1}", ToastDuration.Short)
+                design.showToast("已切换到${EndpointResolver.clientName()}${picked + 1}", ToastDuration.Short)
             } else {
-                design.showToast("神仙云${picked + 1}不通，未切换", ToastDuration.Short)
+                design.showToast("${EndpointResolver.clientName()}${picked + 1}不通，未切换", ToastDuration.Short)
             }
         }
         refreshLineStatus(design)
@@ -347,7 +347,7 @@ class MainActivity : BaseActivity<MainDesign>() {
             val path = if (status == "offline") "offline" else "heartbeat"
             val body = JSONObject().apply {
                 put("platform", "安卓手机")
-                put("app_name", "神仙云安卓端")
+                put("app_name", "${EndpointResolver.clientName()}安卓端")
                 put("app_version", appVersion)
                 put("device_name", "${Build.BRAND} ${Build.MODEL}")
             }.toString().toByteArray(Charsets.UTF_8)
@@ -394,7 +394,7 @@ class MainActivity : BaseActivity<MainDesign>() {
         val params = listOf(
             "client_id=${URLEncoder.encode(stableClientId(), "UTF-8")}",
             "platform=${URLEncoder.encode("安卓手机", "UTF-8")}",
-            "app_name=${URLEncoder.encode("神仙云安卓端", "UTF-8")}",
+            "app_name=${URLEncoder.encode("${EndpointResolver.clientName()}安卓端", "UTF-8")}",
             "app_version=${URLEncoder.encode(appVersion, "UTF-8")}",
             "device_name=${URLEncoder.encode("${Build.BRAND} ${Build.MODEL}", "UTF-8")}",
         ).joinToString("&")
@@ -433,7 +433,7 @@ class MainActivity : BaseActivity<MainDesign>() {
                 put("upload_total", 0L)
                 put("download_total", cumulativeBytes)
                 put("platform", "安卓手机")
-                put("app_name", "神仙云安卓端")
+                put("app_name", "${EndpointResolver.clientName()}安卓端")
                 put("app_version", appVersion)
                 put("device_name", "${Build.BRAND} ${Build.MODEL}")
             }.toString().toByteArray(Charsets.UTF_8)
@@ -482,7 +482,7 @@ class MainActivity : BaseActivity<MainDesign>() {
         val body = JSONObject().apply {
             put("client_id", stableClientId())
             put("platform", "安卓手机")
-            put("app_name", "神仙云安卓端")
+            put("app_name", "${EndpointResolver.clientName()}安卓端")
             put("app_version", appVersion)
             put("device_name", "${Build.BRAND} ${Build.MODEL}")
             put("upload_bytes", 0)
@@ -872,7 +872,13 @@ class MainActivity : BaseActivity<MainDesign>() {
         withContext(Dispatchers.Main) {
             AlertDialog.Builder(this@MainActivity)
                 .setTitle(R.string.app_update_title)
-                .setMessage(getString(R.string.app_update_message, update.first))
+                .setMessage(
+                    getString(
+                        R.string.app_update_message,
+                        EndpointResolver.clientName(),
+                        update.first,
+                    )
+                )
                 .setPositiveButton(R.string.app_update_now) { _, _ ->
                     startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(update.second)))
                 }

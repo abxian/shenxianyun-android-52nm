@@ -5,6 +5,32 @@ import com.android.build.gradle.BaseExtension
 import java.net.URL
 import java.util.*
 
+val siteProfile = Properties().apply {
+    rootProject.file("site-profile.properties").inputStream().use { load(it) }
+}
+
+fun siteProfileValue(key: String): String =
+    siteProfile.getProperty(key)?.trim()?.takeIf(String::isNotEmpty)
+        ?: error("site-profile.properties missing $key")
+
+fun buildConfigString(value: String): String =
+    "\"${value.replace("\\", "\\\\").replace("\"", "\\\"")}\""
+
+require(Regex("^[a-z][a-z0-9+.-]{1,31}$").matches(siteProfileValue("deep.link.scheme"))) {
+    "deep.link.scheme must be a valid URI scheme"
+}
+require("{code}" in siteProfileValue("subscription.name.template")) {
+    "subscription.name.template must contain {code}"
+}
+require(Regex("^[A-Za-z0-9._-]+$").matches(siteProfileValue("android.artifact.basename"))) {
+    "android.artifact.basename may only contain letters, numbers, dot, underscore and dash"
+}
+listOf("api.domestic.base", "api.bases", "discovery.urls").forEach { key ->
+    siteProfileValue(key).split(',').map(String::trim).filter(String::isNotEmpty).forEach {
+        java.net.URI(it).toURL()
+    }
+}
+
 buildscript {
     repositories {
         mavenCentral()
@@ -50,7 +76,9 @@ subprojects {
         defaultConfig {
             if (isApp) {
                 val customApplicationId = queryConfigProperty("custom.application.id") as? String?
-                applicationId = customApplicationId.takeIf { it?.isNotBlank() == true } ?: "com.github.metacubex.clash"
+                applicationId = customApplicationId.takeIf { it?.isNotBlank() == true }
+                    ?: siteProfileValue("android.application.id")
+                manifestPlaceholders["managedImportScheme"] = siteProfileValue("deep.link.scheme")
             }
 
             project.name.let { name ->
@@ -66,6 +94,16 @@ subprojects {
 
             resValue("string", "release_name", "v$versionName")
             resValue("integer", "release_code", "$versionCode")
+            buildConfigField("String", "SITE_PROFILE_ID", buildConfigString(siteProfileValue("profile.id")))
+            buildConfigField("String", "SITE_NAME", buildConfigString(siteProfileValue("site.name")))
+            buildConfigField("String", "CLIENT_NAME", buildConfigString(siteProfileValue("client.name")))
+            buildConfigField("String", "NODE_BRAND", buildConfigString(siteProfileValue("node.brand")))
+            buildConfigField("String", "SUBSCRIPTION_NAME_TEMPLATE", buildConfigString(siteProfileValue("subscription.name.template")))
+            buildConfigField("String", "MANAGED_IMPORT_SCHEME", buildConfigString(siteProfileValue("deep.link.scheme")))
+            buildConfigField("String", "DOMESTIC_API_BASE", buildConfigString(siteProfileValue("api.domestic.base")))
+            buildConfigField("String", "API_BASES", buildConfigString(siteProfileValue("api.bases")))
+            buildConfigField("String", "DISCOVERY_URLS", buildConfigString(siteProfileValue("discovery.urls")))
+            buildConfigField("String", "OFFICIAL_DOMAIN_SUFFIXES", buildConfigString(siteProfileValue("official.domain.suffixes")))
 
             ndk {
                 abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86", "x86_64")
@@ -111,8 +149,8 @@ subprojects {
 
                 buildConfigField("boolean", "PREMIUM", "Boolean.parseBoolean(\"false\")")
 
-                resValue("string", "launch_name", "@string/launch_name_alpha")
-                resValue("string", "application_name", "@string/application_name_alpha")
+                resValue("string", "launch_name", "${siteProfileValue("client.name")} Alpha")
+                resValue("string", "application_name", "${siteProfileValue("client.name")} Alpha")
 
                 if (isApp && !removeSuffix) {
                     applicationIdSuffix = ".alpha"
@@ -128,8 +166,8 @@ subprojects {
 
                 buildConfigField("boolean", "PREMIUM", "Boolean.parseBoolean(\"false\")")
 
-                resValue("string", "launch_name", "@string/launch_name_meta")
-                resValue("string", "application_name", "@string/application_name_meta")
+                resValue("string", "launch_name", siteProfileValue("client.name"))
+                resValue("string", "application_name", siteProfileValue("client.name"))
 
                 if (isApp && !removeSuffix) {
                     applicationIdSuffix = ".meta"

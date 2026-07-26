@@ -1,6 +1,7 @@
 import java.net.URL
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
+import java.util.Properties
 
 plugins {
     kotlin("android")
@@ -65,6 +66,14 @@ task("downloadGeoFiles") {
     }
 }
 
+val appSiteProfile = Properties().apply {
+    rootProject.file("site-profile.properties").inputStream().use { load(it) }
+}
+val artifactBasename = appSiteProfile.getProperty("android.artifact.basename")
+    ?.trim()
+    ?.takeIf(String::isNotEmpty)
+    ?: error("site-profile.properties missing android.artifact.basename")
+
 afterEvaluate {
     val downloadGeoFilesTask = tasks["downloadGeoFiles"]
 
@@ -74,14 +83,14 @@ afterEvaluate {
         }
     }
 
-    tasks.findByName("assembleMetaRelease")?.finalizedBy("copyShenxianyunReleaseApks")
+    tasks.findByName("assembleMetaRelease")?.finalizedBy("copyBrandedReleaseApks")
 }
 
 tasks.getByName("clean", type = Delete::class) {
     delete(file(geoFilesDownloadDir))
 }
 
-tasks.register("copyShenxianyunReleaseApks") {
+tasks.register("copyBrandedReleaseApks") {
     doLast {
         val releaseDir = file("build/outputs/apk/meta/release")
         val arm64Apk = releaseDir.listFiles()
@@ -92,8 +101,10 @@ tasks.register("copyShenxianyunReleaseApks") {
         requireNotNull(arm64Apk) { "arm64 release APK not found in ${releaseDir.path}" }
         requireNotNull(universalApk) { "universal release APK not found in ${releaseDir.path}" }
 
-        Files.copy(arm64Apk.toPath(), releaseDir.resolve("shenxianyun.apk").toPath(), StandardCopyOption.REPLACE_EXISTING)
-        Files.copy(universalApk.toPath(), releaseDir.resolve("shenxianyunall.apk").toPath(), StandardCopyOption.REPLACE_EXISTING)
-        println("Copied signed release APKs: shenxianyun.apk, shenxianyunall.apk")
+        val arm64Name = "$artifactBasename.apk"
+        val universalName = "${artifactBasename}all.apk"
+        Files.copy(arm64Apk.toPath(), releaseDir.resolve(arm64Name).toPath(), StandardCopyOption.REPLACE_EXISTING)
+        Files.copy(universalApk.toPath(), releaseDir.resolve(universalName).toPath(), StandardCopyOption.REPLACE_EXISTING)
+        println("Copied signed release APKs: $arm64Name, $universalName")
     }
 }

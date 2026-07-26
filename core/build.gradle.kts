@@ -1,6 +1,8 @@
 import android.databinding.tool.ext.capitalizeUS
 import com.github.kr328.golang.GolangBuildTask
 import com.github.kr328.golang.GolangPlugin
+import java.net.URI
+import java.util.Properties
 
 plugins {
     kotlin("android")
@@ -10,6 +12,42 @@ plugins {
 }
 
 val golangSource = file("src/main/golang/native")
+val siteProfileFile = rootProject.file("site-profile.properties")
+val generatedSiteProfileGo = file("src/main/golang/native/config/site_profile_generated.go")
+val generateSiteProfileGo by tasks.registering {
+    inputs.file(siteProfileFile)
+    outputs.file(generatedSiteProfileGo)
+    doLast {
+        val profile = Properties().apply {
+            siteProfileFile.inputStream().use { load(it) }
+        }
+        fun values(key: String): List<String> =
+            profile.getProperty(key)
+                ?.split(',')
+                ?.map(String::trim)
+                ?.filter(String::isNotEmpty)
+                ?: error("site-profile.properties missing $key")
+        val directRules = linkedSetOf<String>()
+        values("api.bases").forEach { value ->
+            val host = URI(value).host ?: error("api.bases contains an invalid URL: $value")
+            directRules += "DOMAIN,$host,DIRECT"
+        }
+        values("official.domain.suffixes").forEach { suffix ->
+            directRules += "DOMAIN-SUFFIX,$suffix,DIRECT"
+        }
+        val source = buildString {
+            appendLine("// Code generated from site-profile.properties by Gradle. DO NOT EDIT.")
+            appendLine("package config")
+            appendLine()
+            appendLine("var backendDirectRules = []string{")
+            directRules.forEach { rule ->
+                appendLine("\t\"${rule.replace("\\", "\\\\").replace("\"", "\\\"")}\",")
+            }
+            appendLine("}")
+        }
+        generatedSiteProfileGo.writeText(source)
+    }
+}
 
 golang {
     sourceSets {
@@ -58,7 +96,9 @@ dependencies {
 
 afterEvaluate {
     tasks.withType(GolangBuildTask::class.java).forEach {
+        dependsOn(generateSiteProfileGo)
         it.inputs.dir(golangSource)
+        it.inputs.file(siteProfileFile)
     }
 }
 

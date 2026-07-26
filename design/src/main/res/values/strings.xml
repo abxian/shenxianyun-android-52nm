@@ -54,7 +54,7 @@
     <string name="update_subscription_summary">Refresh the node list for the current code</string>
     <string name="subscription_updated">Subscription updated</string>
     <string name="app_update_title">New version available</string>
-    <string name="app_update_message">Version %1$s is available.</string>
+    <string name="app_update_message">A new %1$s version %2$s is available.</string>
     <string name="app_update_now">Update now</string>
     <string name="app_update_later">Later</string>
     <string name="renew_code">Renew Code</string>

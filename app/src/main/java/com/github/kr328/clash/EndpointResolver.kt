@@ -23,7 +23,7 @@ object EndpointResolver {
     val PINNED_COUNT = PINNED_API_BASES.size
 
     /** 内置兜底默认值（发现源全挂时用第一条写死线路）。 */
-    const val DEFAULT_API_BASE = DomainProfile.DOMESTIC_API_BASE
+    val DEFAULT_API_BASE = DomainProfile.DOMESTIC_API_BASE
 
     /** 完整线路 = 写死主线路(神仙云1/2) + 发现的 api_bases(神仙云3/4…, 去重排后)。 */
     private fun allApiBases(): List<String> {
@@ -36,12 +36,17 @@ object EndpointResolver {
     private val DISCOVERY_URLS = DomainProfile.DISCOVERY_URLS
 
     // 使用独立存储，覆盖安装旧客户端时不会继续读取旧 sxnn/jc116 缓存。
-    private const val STORE = "shenxianyun_52nm_endpoints"
+    private val STORE = "shenxianyun_${DomainProfile.PROFILE_ID}_endpoints"
     private const val KEY_API_BASES = "api_bases"
     private const val KEY_ACTIVE_BASE = "api_base_active"
     private const val KEY_SUB_BASE = "sub_base"
     private const val KEY_DOWNLOAD_BASE = "download_base"
     private const val KEY_BOOTSTRAP_PROXY = "bootstrap_proxy"
+    private const val KEY_SITE_NAME = "brand_site_name"
+    private const val KEY_CLIENT_NAME = "brand_client_name"
+    private const val KEY_NODE_BRAND = "brand_node_brand"
+    private const val KEY_SUBSCRIPTION_NAME_TEMPLATE = "brand_subscription_name_template"
+    private const val KEY_MANAGED_IMPORT_SCHEME = "brand_managed_import_scheme"
 
     private const val DISCOVERY_TIMEOUT_MS = 8_000
     private const val PROBE_TIMEOUT_MS = 5_000
@@ -67,6 +72,26 @@ object EndpointResolver {
     }
 
     fun downloadBase(): String = normalizeBase(prefs.getString(KEY_DOWNLOAD_BASE, null))
+
+    fun siteName(): String =
+        prefs.getString(KEY_SITE_NAME, null)?.trim()?.takeIf(String::isNotEmpty)
+            ?: DomainProfile.SITE_NAME
+
+    fun clientName(): String =
+        prefs.getString(KEY_CLIENT_NAME, null)?.trim()?.takeIf(String::isNotEmpty)
+            ?: DomainProfile.CLIENT_NAME
+
+    fun nodeBrand(): String =
+        prefs.getString(KEY_NODE_BRAND, null)?.trim()?.takeIf(String::isNotEmpty)
+            ?: DomainProfile.NODE_BRAND
+
+    fun subscriptionNameTemplate(): String =
+        prefs.getString(KEY_SUBSCRIPTION_NAME_TEMPLATE, null)?.trim()?.takeIf(String::isNotEmpty)
+            ?: DomainProfile.SUBSCRIPTION_NAME_TEMPLATE
+
+    fun managedImportScheme(): String =
+        prefs.getString(KEY_MANAGED_IMPORT_SCHEME, null)?.trim()?.takeIf(String::isNotEmpty)
+            ?: DomainProfile.MANAGED_IMPORT_SCHEME
 
     /** 后台下发的兜底代理（http://[user:pass@]host:port，也支持 socks5://）。无则空串。 */
     fun bootstrapProxy(): String {
@@ -127,16 +152,30 @@ object EndpointResolver {
                 val (code, body) = httpGet(url, DISCOVERY_TIMEOUT_MS)
                 if (code !in 200..299 || body.isBlank()) continue
                 val json = JSONObject(body)
+                val profileId = json.optString("profile").trim()
+                if (profileId.isNotEmpty() && profileId != DomainProfile.PROFILE_ID) continue
                 val basesJson = json.optJSONArray("api_bases") ?: continue
                 val bases = (0 until basesJson.length())
                     .map { normalizeBase(basesJson.optString(it)) }
                     .filter { it.isNotEmpty() }
                 if (bases.isEmpty()) continue
+                val brand = json.optJSONObject("brand")
                 prefs.edit()
                     .putString(KEY_API_BASES, bases.joinToString("\n"))
                     .putString(KEY_SUB_BASE, normalizeBase(json.optString("sub_base")))
                     .putString(KEY_DOWNLOAD_BASE, normalizeBase(json.optString("download_base")))
                     .putString(KEY_BOOTSTRAP_PROXY, json.optString("bootstrap_proxy").trim())
+                    .putString(KEY_SITE_NAME, brand?.optString("site_name")?.trim().orEmpty())
+                    .putString(KEY_CLIENT_NAME, brand?.optString("client_name")?.trim().orEmpty())
+                    .putString(KEY_NODE_BRAND, brand?.optString("node_brand")?.trim().orEmpty())
+                    .putString(
+                        KEY_SUBSCRIPTION_NAME_TEMPLATE,
+                        brand?.optString("subscription_name_template")?.trim().orEmpty()
+                    )
+                    .putString(
+                        KEY_MANAGED_IMPORT_SCHEME,
+                        brand?.optString("managed_import_scheme")?.trim().orEmpty()
+                    )
                     .apply()
                 return
             } catch (_: Exception) {

@@ -60,16 +60,12 @@ func patchGeneral(cfg *config.RawConfig, profileDir string) error {
 }
 
 func patchBackendDirectRule(cfg *config.RawConfig, _ string) error {
-	directRules := []string{
-		"DOMAIN,api.52nm.de,DIRECT",
-		"DOMAIN-SUFFIX,52nm.de,DIRECT",
-	}
 	exists := map[string]bool{}
 	for _, rule := range cfg.Rule {
 		exists[rule] = true
 	}
-	prepend := make([]string, 0, len(directRules))
-	for _, rule := range directRules {
+	prepend := make([]string, 0, len(backendDirectRules))
+	for _, rule := range backendDirectRules {
 		if !exists[rule] {
 			prepend = append(prepend, rule)
 		}

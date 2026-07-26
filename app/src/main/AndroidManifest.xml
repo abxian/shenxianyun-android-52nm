@@ -78,7 +78,7 @@
 
                 <data
                     android:host="install-config"
-                    android:scheme="shenxianyun" />
+                    android:scheme="${managedImportScheme}" />
             </intent-filter>
             <intent-filter>
                 <action android:name="com.github.metacubex.clash.meta.action.START_CLASH" />

@@ -85,5 +85,5 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v7
         with:
-          name: shenxianyun-android-apk
+          name: ${{ github.event.repository.name }}-apk
           path: app/build/outputs/apk/meta/release/*.apk
