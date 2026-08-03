@@ -28,6 +28,9 @@
             name="activationCode"
             type="String" />
         <variable
+            name="activationExpiresAt"
+            type="String" />
+        <variable
             name="colorClashStarted"
             type="int" />
         <variable
@@ -174,6 +177,16 @@
                         android:textAppearance="@style/TextAppearance.MaterialComponents.Caption"
                         android:textColor="@color/sxy_text_soft" />
                 </LinearLayout>
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:background="@drawable/bg_sxy_chip"
+                    android:text="@{@string/format_activation_expiry(activationExpiresAt)}"
+                    android:textAppearance="@style/TextAppearance.MaterialComponents.Caption"
+                    android:textColor="@color/sxy_text_soft"
+                    android:visibility="@{activationExpiresAt == null ? View.GONE : View.VISIBLE}" />
 
                 <LinearLayout
                     android:layout_width="match_parent"

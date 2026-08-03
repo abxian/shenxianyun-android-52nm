@@ -54,6 +54,12 @@ class MainDesign(context: Context) : Design<MainDesign.Request>(context) {
         }
     }
 
+    suspend fun setActivationExpiresAt(expiresAt: String?) {
+        withContext(Dispatchers.Main) {
+            binding.activationExpiresAt = expiresAt
+        }
+    }
+
     suspend fun setClashRunning(running: Boolean) {
         withContext(Dispatchers.Main) {
             currentClashRunning = running

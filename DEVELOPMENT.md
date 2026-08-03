@@ -246,9 +246,11 @@ queryUpdateVersion(code)
 
 流程：
 
-1. 定时请求 `/api/update-state/<code>`。
-2. 如果远端版本大于本地 `KEY_UPDATE_VERSION`，调用 `importSubscriptionCode(code, silent = true)`。
-3. 静默更新不带 `import=1`，不会重复计数。
+1. 每个客户端进程启动后，对已有提取码完整刷新一次受管订阅；配置校验或网络失败时保留旧 Profile。
+2. 已连接时每 10 分钟请求 `/api/update-state/<code>`；只有远端版本大于本地 `KEY_UPDATE_VERSION` 才再次下载整份订阅。
+3. 连接期间复用 60 秒心跳响应里的 `expires_at`；未连接但首页在前台时每 60 秒轻量请求 update-state，同步续费后的到期时间。
+4. 到期时间同时保存到激活状态和加密受管凭据，并显示在首页；相同日期不重复刷新 UI。
+5. 静默更新不带 `import=1`，不会重复计数；自动更新不会把用户主动选择的普通 Profile 切回受管 Profile。
 
 ### 9.3 开启代理
 
@@ -272,7 +274,7 @@ isActivationStillValid(code)
 
 - `Event.ClashStart` 上报在线。
 - `Event.ClashStop` 上报离线。
-- VPN 运行期间每 30 秒心跳一次。
+- VPN 运行期间每 60 秒心跳一次，并从成功响应同步最新到期时间。
 
 接口：
 
@@ -428,6 +430,8 @@ ExternalControlActivity.kt
 11. 网页一键导入神仙云可自动导入。
 12. 过期提取码不能开启 VPN。
 13. APK 更新弹窗可打开下载地址。
+14. 每个进程启动只完整刷新一次订阅，Activity 重建不重复下载；刷新失败仍保留旧配置。
+15. 网站续费后，连接中或未连接但首页停留时约 60 秒内显示新的到期时间。
 
 ## 14. Git 提交规则
 

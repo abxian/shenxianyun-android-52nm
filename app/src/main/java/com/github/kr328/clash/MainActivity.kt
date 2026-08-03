@@ -31,6 +31,7 @@ import com.github.kr328.clash.util.stopClashService
 import com.github.kr328.clash.util.withClash
 import com.github.kr328.clash.util.withProfile
 import com.github.kr328.clash.core.bridge.*
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -39,6 +40,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.selects.select
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.net.HttpURLConnection
@@ -49,10 +52,13 @@ import java.util.Date
 import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import com.github.kr328.clash.design.R
 
 class MainActivity : BaseActivity<MainDesign>() {
     private var selectedMode = TunnelState.Mode.Rule
+    private val subscriptionRefreshMutex = Mutex()
+
     private enum class TrafficReportResult {
         Success,
         CounterReset,
@@ -72,21 +78,49 @@ class MainActivity : BaseActivity<MainDesign>() {
         const val UPDATE_CHECK_INTERVAL_MILLIS = 600_000L
         const val UPDATE_CHECK_MAX_INTERVAL_MILLIS = 3_600_000L
         const val HEARTBEAT_INTERVAL_MILLIS = 60_000L
+        const val EXPIRY_SYNC_INTERVAL_MILLIS = 60_000L
         const val TRAFFIC_REPORT_INTERVAL_MILLIS = 60_000L
         const val MAX_TRAFFIC_REPORT_DELTA_BYTES = 5L * 1024 * 1024 * 1024
         const val EXPIRED_NODE_NAME = "提取码到期，请续费使用"
         const val EXPIRED_PROFILE_NAME = "提取码已到期"
+
+        // 0=尚未尝试，1=正在刷新，2=本进程已经尝试。Activity 因配置变化重建时不重复下载。
+        val startupSubscriptionRefreshState = AtomicInteger(0)
     }
+
+    private data class SubscriptionUpdateState(
+        val updateVersion: Long?,
+        val expiresAt: String?,
+    )
 
     override suspend fun main() {
         val design = MainDesign(this)
         stableClientId()
 
+        var lastExpirySyncAt = System.currentTimeMillis()
+        var expirySyncInFlight = true
+
         // 端点发现：后台拉取 endpoints.json 并探测可用 API 基址（失败静默，用缓存/内置默认）。
         // 必须放独立协程，绝不能阻塞下面的 select 事件循环。
         launch {
-            EndpointResolver.initialize()
-            refreshLineStatus(design)
+            try {
+                try {
+                    EndpointResolver.initialize()
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (_: Exception) {
+                }
+                try {
+                    refreshLineStatus(design)
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (_: Exception) {
+                }
+                design.refreshSubscriptionOnProcessStart()
+            } finally {
+                lastExpirySyncAt = System.currentTimeMillis()
+                expirySyncInFlight = false
+            }
         }
 
         setContentDesign(design)
@@ -114,6 +148,34 @@ class MainActivity : BaseActivity<MainDesign>() {
         var subscriptionFailures = 0
         var subscriptionCheckDelay = UPDATE_CHECK_INTERVAL_MILLIS
 
+        fun launchExpirySync() {
+            val code = savedActivationCode()
+            val now = System.currentTimeMillis()
+            if (
+                clashRunning ||
+                !activityStarted ||
+                code.isBlank() ||
+                expirySyncInFlight ||
+                now - lastExpirySyncAt < EXPIRY_SYNC_INTERVAL_MILLIS
+            ) {
+                return
+            }
+
+            expirySyncInFlight = true
+            launch {
+                try {
+                    design.syncActivationState(code)
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (_: Exception) {
+                    runCatching { EndpointResolver.rotate() }
+                } finally {
+                    lastExpirySyncAt = System.currentTimeMillis()
+                    expirySyncInFlight = false
+                }
+            }
+        }
+
         while (isActive) {
             select<Unit> {
                 events.onReceive {
@@ -121,7 +183,10 @@ class MainActivity : BaseActivity<MainDesign>() {
                     // 必须放进独立协程，否则会阻塞这个 select 事件循环，导致后续所有点击
                     // （design.requests）排队却不被处理，界面看起来“点击失效、什么都点不了”。
                     when (it) {
-                        Event.ActivityStart,
+                        Event.ActivityStart -> {
+                            launch { design.safeFetch() }
+                            launchExpirySync()
+                        }
                         Event.ServiceRecreated,
                         Event.ProfileLoaded, Event.ProfileChanged -> launch { design.safeFetch() }
                         Event.ClashStart -> {
@@ -129,6 +194,7 @@ class MainActivity : BaseActivity<MainDesign>() {
                             trafficCounterSequence = 0L
                             trafficCounterBase = 0L
                             pendingTrafficTotal = null
+                            lastHeartbeatAt = System.currentTimeMillis()
                             launch { design.safeFetch() }
                             launch { sendClientHeartbeat("online") }
                         }
@@ -252,6 +318,10 @@ class MainActivity : BaseActivity<MainDesign>() {
                                 lastReportedTrafficTotal = trafficTotal
                             }
                         }
+                    } else {
+                        // 核心未运行但首页在前台时，轻量同步续费后的到期时间；不下载订阅、
+                        // 不发送在线心跳，也不占用在线设备名额。
+                        launchExpirySync()
                     }
                     // 仅在已连接、无在途请求、且到达（含退避后的）间隔时才发起更新检查。
                     if (clashRunning &&
@@ -382,6 +452,12 @@ class MainActivity : BaseActivity<MainDesign>() {
                         json?.optString("message", "套餐设备或流量额度已达到上限")
                             ?: "套餐设备或流量额度已达到上限",
                     )
+                } else if (
+                    status != "offline" &&
+                    statusCode in 200..299 &&
+                    json?.optBoolean("ok", false) == true
+                ) {
+                    syncActivationExpiresAt(code, json.optString("expires_at", ""))
                 }
             } catch (_: Exception) {
             } finally {
@@ -406,7 +482,22 @@ class MainActivity : BaseActivity<MainDesign>() {
             setRequestProperty("X-Client-Id", stableClientId())
         }
         try {
-            connection.responseCode
+            val statusCode = connection.responseCode
+            val stream = if (statusCode in 200..299) {
+                connection.inputStream
+            } else {
+                connection.errorStream
+            }
+            val json = runCatching {
+                JSONObject(stream?.bufferedReader()?.use { it.readText() }.orEmpty())
+            }.getOrNull()
+            if (
+                status != "offline" &&
+                statusCode in 200..299 &&
+                json?.optBoolean("ok", false) == true
+            ) {
+                syncActivationExpiresAt(code, json.optString("expires_at", ""))
+            }
         } catch (_: Exception) {
         } finally {
             connection.disconnect()
@@ -539,6 +630,9 @@ class MainActivity : BaseActivity<MainDesign>() {
     private suspend fun MainDesign.fetch() {
         setClashRunning(clashRunning)
         setActivationCode(savedActivationCode().ifBlank { null })
+        setActivationExpiresAt(
+            normalizedExpiresAt(activationStore().getString(KEY_EXPIRES_AT, null)),
+        )
 
         val state = withClash {
             queryTunnelState()
@@ -654,12 +748,34 @@ class MainActivity : BaseActivity<MainDesign>() {
             .show()
     }
 
-    private suspend fun MainDesign.importSubscriptionCode(code: String, silent: Boolean = false) {
+    private suspend fun MainDesign.refreshSubscriptionOnProcessStart() {
+        val code = savedActivationCode()
+        if (code.isBlank() || !startupSubscriptionRefreshState.compareAndSet(0, 1)) {
+            return
+        }
+
+        var completed = false
+        try {
+            importSubscriptionCode(code, silent = true, notifySuccess = false)
+            completed = true
+        } finally {
+            startupSubscriptionRefreshState.set(if (completed) 2 else 0)
+        }
+    }
+
+    private suspend fun MainDesign.importSubscriptionCode(
+        code: String,
+        silent: Boolean = false,
+        notifySuccess: Boolean = true,
+    ): Boolean = subscriptionRefreshMutex.withLock {
         try {
             if (!silent) {
                 showToast(R.string.import_code_fetching, ToastDuration.Long)
             }
 
+            val activeUuidBefore = withProfile { queryActive()?.uuid }
+            val managedUuidBefore = managedProfileUuid()
+            val expiredUuidBefore = expiredProfileUuid()
             val existing = loadManagedCredentials()
                 ?.takeIf { it.accessCode == code }
             var credentials = if (silent && existing != null) {
@@ -691,6 +807,8 @@ class MainActivity : BaseActivity<MainDesign>() {
                             stableClientId(),
                         ).copy(accessCode = code)
                         break
+                    } catch (e: CancellationException) {
+                        throw e
                     } catch (e: Exception) {
                         lastError = e
                     }
@@ -702,11 +820,15 @@ class MainActivity : BaseActivity<MainDesign>() {
             if (isExpired(credentials.expiresAt)) {
                 if (!silent) {
                     showToast(R.string.import_code_expired, ToastDuration.Long)
+                    return@withLock false
                 }
-                return
+                // 自动刷新不能只相信客户端内缓存的旧日期。续费后服务端可能已经延长
+                // 设备令牌，继续尝试拉取；若确实过期，服务端会拒绝且旧配置保持不变。
             }
             val content = try {
                 fetchManagedSubscription(credentials)
+            } catch (error: CancellationException) {
+                throw error
             } catch (error: Exception) {
                 if (!silent || existing == null) throw error
                 val apiBase = existing.apiBase.ifBlank { EndpointResolver.apiBase() }
@@ -718,26 +840,51 @@ class MainActivity : BaseActivity<MainDesign>() {
                 ).copy(accessCode = code)
                 fetchManagedSubscription(credentials)
             }
-            val uuid = installManagedProfile(code, content)
+            val updateState = try {
+                queryUpdateState(code)
+            } catch (error: CancellationException) {
+                throw error
+            } catch (_: Exception) {
+                null
+            }
+            val expiresAt = updateState?.expiresAt ?: credentials.expiresAt
+            if (expiresAt != credentials.expiresAt) {
+                credentials = credentials.copy(expiresAt = expiresAt)
+            }
+            val shouldActivate = !silent ||
+                activeUuidBefore == null ||
+                activeUuidBefore == managedUuidBefore ||
+                activeUuidBefore == expiredUuidBefore
+            val uuid = installManagedProfile(code, content, activate = shouldActivate)
             saveManagedCredentials(credentials)
-            val expiresAt = credentials.expiresAt
-            val updateVersion = queryUpdateVersion(code)
+            val updateVersion = updateState?.updateVersion
                 ?: activationStore().getLong(KEY_UPDATE_VERSION, 0L)
-            activationStore().edit()
+            val editor = activationStore().edit()
                 .putString(KEY_CODE, code)
                 .putString(KEY_EXPIRES_AT, expiresAt)
                 .putString(KEY_PROFILE_UUID, uuid.toString())
                 .putLong(KEY_UPDATE_VERSION, updateVersion)
-                .apply()
+            if (activeUuidBefore == expiredUuidBefore && expiredUuidBefore != null) {
+                withProfile { runCatching { delete(expiredUuidBefore) } }
+                editor.remove(KEY_EXPIRED_PROFILE_UUID)
+            }
+            editor.apply()
+            startupSubscriptionRefreshState.set(2)
             fetch()
-            showToast(
-                if (silent) R.string.subscription_updated else R.string.import_code_success,
-                ToastDuration.Long
-            )
+            if (notifySuccess) {
+                showToast(
+                    if (silent) R.string.subscription_updated else R.string.import_code_success,
+                    ToastDuration.Long
+                )
+            }
+            true
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             if (!silent) {
                 showToast(R.string.import_code_failed_after_retries, ToastDuration.Long)
             }
+            false
         }
     }
 
@@ -797,6 +944,41 @@ class MainActivity : BaseActivity<MainDesign>() {
     private fun savedActivationCode(): String =
         activationStore().getString(KEY_CODE, "")?.trim().orEmpty()
 
+    private fun normalizedExpiresAt(value: String?): String? =
+        value?.trim()?.takeIf { it.isNotBlank() && it != "null" }
+
+    private suspend fun syncActivationExpiresAt(code: String, value: String?): Boolean {
+        val expiresAt = normalizedExpiresAt(value) ?: return false
+        if (savedActivationCode() != code) return false
+
+        val store = activationStore()
+        val storedChanged = normalizedExpiresAt(store.getString(KEY_EXPIRES_AT, null)) != expiresAt
+        if (storedChanged) {
+            store.edit().putString(KEY_EXPIRES_AT, expiresAt).apply()
+        }
+
+        val credentials = loadManagedCredentials()
+            ?.takeIf { it.accessCode == code }
+        if (credentials != null && credentials.expiresAt != expiresAt) {
+            runCatching { saveManagedCredentials(credentials.copy(expiresAt = expiresAt)) }
+        }
+
+        if (storedChanged) {
+            design?.setActivationExpiresAt(expiresAt)
+        }
+        return storedChanged
+    }
+
+    private suspend fun MainDesign.syncActivationState(
+        code: String,
+    ): SubscriptionUpdateState? {
+        if (savedActivationCode() != code) return null
+        val state = queryUpdateState(code) ?: return null
+        if (savedActivationCode() != code) return null
+        syncActivationExpiresAt(code, state.expiresAt)
+        return state
+    }
+
     private fun openCodeStorePage() {
         val code = savedActivationCode()
         val encoded = URLEncoder.encode(code, "UTF-8").replace("+", "%20")
@@ -808,7 +990,9 @@ class MainActivity : BaseActivity<MainDesign>() {
         startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
     }
 
-    private suspend fun queryUpdateVersion(code: String): Long? = withContext(Dispatchers.IO) {
+    private suspend fun queryUpdateState(
+        code: String,
+    ): SubscriptionUpdateState? = withContext(Dispatchers.IO) {
         val encoded = URLEncoder.encode(code, "UTF-8").replace("+", "%20")
         val clientId = URLEncoder.encode(stableClientId(), "UTF-8")
         val connection = (URL("${EndpointResolver.apiBase()}/api/update-state/$encoded?client_id=$clientId").openConnection() as HttpURLConnection).apply {
@@ -829,11 +1013,17 @@ class MainActivity : BaseActivity<MainDesign>() {
                 return@withContext null
             }
 
-            json.optLong("update_version", 0L).takeIf { it > 0L }
+            SubscriptionUpdateState(
+                updateVersion = json.optLong("update_version", 0L).takeIf { it > 0L },
+                expiresAt = normalizedExpiresAt(json.optString("expires_at", "")),
+            )
         } finally {
             connection.disconnect()
         }
     }
+
+    private suspend fun queryUpdateVersion(code: String): Long? =
+        queryUpdateState(code)?.updateVersion
 
     private suspend fun MainDesign.checkAppUpdate() {
         val update = withContext(Dispatchers.IO) {
@@ -905,7 +1095,8 @@ class MainActivity : BaseActivity<MainDesign>() {
             return
         }
 
-        val remoteVersion = queryUpdateVersion(code) ?: return
+        val updateState = syncActivationState(code) ?: return
+        val remoteVersion = updateState.updateVersion ?: return
 
         val localVersion = activationStore().getLong(KEY_UPDATE_VERSION, 0L)
         if (localVersion > 0L && remoteVersion <= localVersion) {
