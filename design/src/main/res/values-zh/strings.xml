@@ -77,6 +77,7 @@
     <string name="import_code_expired_title">提取码已到期</string>
     <string name="import_code_expired_message">当前提取码已到期，已切换到「提取码到期，请续费使用」占位节点，暂时无法上网。\n请续费后重新导入提取码即可恢复；续费成功后也会自动检测并恢复正常订阅。</string>
     <string name="subscription_recovered">提取码已续费，订阅已自动恢复</string>
+    <string name="format_activation_expiry">到期 %1$s</string>
     <string name="manage_profiles">配置文件管理（切换/导入）</string>
     <string name="manage_profiles_summary">切换配置、导入链接与更新节点</string>
     <string name="app_settings_summary">界面、行为与通知选项</string>

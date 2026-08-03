@@ -271,7 +271,11 @@ internal suspend fun Context.fetchManagedSubscription(
     }
 }
 
-internal suspend fun Context.installManagedProfile(code: String, content: String): UUID {
+internal suspend fun Context.installManagedProfile(
+    code: String,
+    content: String,
+    activate: Boolean = true,
+): UUID {
     val store = getSharedPreferences(ACTIVATION_STORE_NAME, Context.MODE_PRIVATE)
     val oldUuid = managedProfileUuid()
     return withProfile {
@@ -286,7 +290,9 @@ internal suspend fun Context.installManagedProfile(code: String, content: String
         config.parentFile?.mkdirs()
         config.writeText(content)
         commit(uuid, null)
-        queryByUUID(uuid)?.let { setActive(it) }
+        if (activate) {
+            queryByUUID(uuid)?.let { setActive(it) }
+        }
         if (oldUuid != null && oldUuid != uuid) {
             runCatching { delete(oldUuid) }
         }

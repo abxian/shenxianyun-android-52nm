@@ -38,6 +38,7 @@
     <string name="import_code_expired_title">Subscription code expired</string>
     <string name="import_code_expired_message">Your subscription code has expired. Switched to the \"renew to continue\" placeholder node, so there is no internet for now.\nRenew and re-import the code to restore; once renewed it will also be detected and restored automatically.</string>
     <string name="subscription_recovered">Code renewed, subscription restored</string>
+    <string name="format_activation_expiry">Expires %1$s</string>
     <string name="manage_profiles">Manage profiles (switch / import)</string>
     <string name="manage_profiles_summary">Switch profiles, import links, and update nodes</string>
     <string name="app_settings_summary">Appearance, behavior, and notification options</string>
