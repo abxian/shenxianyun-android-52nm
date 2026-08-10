@@ -73,11 +73,13 @@ class MainActivity : BaseActivity<MainDesign>() {
         const val KEY_PROFILE_UUID = "profile_uuid"
         const val KEY_UPDATE_VERSION = "update_version"
         const val KEY_CLIENT_ID = "client_id"
+        const val KEY_PENDING_PRESENCE = "pending_presence"
         const val KEY_EXPIRED_PROFILE_UUID = "expired_profile_uuid"
         // 订阅更新轮询：仅在已连接时运行，基础 10 分钟，失败指数退避到最多 1 小时。
         const val UPDATE_CHECK_INTERVAL_MILLIS = 600_000L
         const val UPDATE_CHECK_MAX_INTERVAL_MILLIS = 3_600_000L
-        const val HEARTBEAT_INTERVAL_MILLIS = 60_000L
+        const val HEARTBEAT_INTERVAL_MILLIS = 120_000L
+        const val HEARTBEAT_JITTER_MILLIS = 20_000L
         const val EXPIRY_SYNC_INTERVAL_MILLIS = 60_000L
         const val TRAFFIC_REPORT_INTERVAL_MILLIS = 60_000L
         const val MAX_TRAFFIC_REPORT_DELTA_BYTES = 5L * 1024 * 1024 * 1024
@@ -86,6 +88,24 @@ class MainActivity : BaseActivity<MainDesign>() {
 
         // 0=尚未尝试，1=正在刷新，2=本进程已经尝试。Activity 因配置变化重建时不重复下载。
         val startupSubscriptionRefreshState = AtomicInteger(0)
+    }
+
+    private fun nextHeartbeatDelayMillis(): Long =
+        HEARTBEAT_INTERVAL_MILLIS + (Math.random() * HEARTBEAT_JITTER_MILLIS).toLong()
+
+    private fun savePendingPresence(code: String, status: String): String {
+        val id = UUID.randomUUID().toString()
+        activationStore().edit()
+            .putString(KEY_PENDING_PRESENCE, "$id|$code|$status")
+            .apply()
+        return id
+    }
+
+    private fun clearPendingPresence(id: String) {
+        val current = activationStore().getString(KEY_PENDING_PRESENCE, "").orEmpty()
+        if (current.startsWith("$id|")) {
+            activationStore().edit().remove(KEY_PENDING_PRESENCE).apply()
+        }
     }
 
     private data class SubscriptionUpdateState(
@@ -136,7 +156,7 @@ class MainActivity : BaseActivity<MainDesign>() {
 
         val ticker = ticker(TimeUnit.SECONDS.toMillis(1))
         var lastSubscriptionUpdateCheck = 0L
-        var lastHeartbeatAt = 0L
+        var nextHeartbeatAt = 0L
         var lastTrafficReportAt = 0L
         var lastReportedTrafficTotal: Long? = null
         var trafficCounterId = UUID.randomUUID().toString()
@@ -194,13 +214,13 @@ class MainActivity : BaseActivity<MainDesign>() {
                             trafficCounterSequence = 0L
                             trafficCounterBase = 0L
                             pendingTrafficTotal = null
-                            lastHeartbeatAt = System.currentTimeMillis()
+                            nextHeartbeatAt = System.currentTimeMillis() + nextHeartbeatDelayMillis()
                             launch { design.safeFetch() }
                             launch { sendClientHeartbeat("online") }
                         }
                         Event.ClashStop -> {
                             launch { design.safeFetch() }
-                            lastHeartbeatAt = 0L
+                            nextHeartbeatAt = 0L
                             lastTrafficReportAt = 0L
                             lastReportedTrafficTotal = null
                             pendingTrafficTotal = null
@@ -274,8 +294,8 @@ class MainActivity : BaseActivity<MainDesign>() {
                             lastReportedTrafficTotal = trafficTotal
                             trafficCounterBase = trafficTotal
                         }
-                        if (now - lastHeartbeatAt >= HEARTBEAT_INTERVAL_MILLIS) {
-                            lastHeartbeatAt = now
+                        if (now >= nextHeartbeatAt) {
+                            nextHeartbeatAt = now + nextHeartbeatDelayMillis()
                             launch { sendClientHeartbeat("online") }
                         }
                         if (now - lastTrafficReportAt >= TRAFFIC_REPORT_INTERVAL_MILLIS) {
@@ -410,6 +430,8 @@ class MainActivity : BaseActivity<MainDesign>() {
         if (code.isBlank()) {
             return@withContext
         }
+        // 只保存最后一次期望状态，不堆积历史心跳；离线会覆盖更早的在线。
+        val pendingId = savePendingPresence(code, status)
         val appVersion = queryAppVersionName().asHeaderValue()
         val credentials = loadManagedCredentials()
             ?.takeIf { it.accessCode == code }
@@ -459,6 +481,9 @@ class MainActivity : BaseActivity<MainDesign>() {
                 ) {
                     syncActivationExpiresAt(code, json.optString("expires_at", ""))
                 }
+                if (statusCode in 200..299 && json?.optBoolean("ok", false) == true) {
+                    clearPendingPresence(pendingId)
+                }
             } catch (_: Exception) {
             } finally {
                 connection.disconnect()
@@ -497,6 +522,9 @@ class MainActivity : BaseActivity<MainDesign>() {
                 json?.optBoolean("ok", false) == true
             ) {
                 syncActivationExpiresAt(code, json.optString("expires_at", ""))
+            }
+            if (statusCode in 200..299 && json?.optBoolean("ok", false) == true) {
+                clearPendingPresence(pendingId)
             }
         } catch (_: Exception) {
         } finally {
