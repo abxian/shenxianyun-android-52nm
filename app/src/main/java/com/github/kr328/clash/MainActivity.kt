@@ -20,7 +20,6 @@ import com.github.kr328.clash.core.Clash
 import com.github.kr328.clash.core.model.Proxy
 import com.github.kr328.clash.core.model.ProxySort
 import com.github.kr328.clash.core.model.TunnelState
-import com.github.kr328.clash.core.util.trafficTotalBytes
 import com.github.kr328.clash.common.util.ticker
 import com.github.kr328.clash.design.MainDesign
 import com.github.kr328.clash.design.ui.ToastDuration
@@ -66,6 +65,32 @@ class MainActivity : BaseActivity<MainDesign>() {
         Failure,
     }
 
+    private data class TrafficTotals(val upload: Long, val download: Long) {
+        operator fun minus(other: TrafficTotals) = TrafficTotals(
+            (upload - other.upload).coerceAtLeast(0L),
+            (download - other.download).coerceAtLeast(0L),
+        )
+
+        operator fun plus(other: TrafficTotals) = TrafficTotals(
+            upload + other.upload,
+            download + other.download,
+        )
+
+        fun total() = upload + download
+
+        fun regressedFrom(previous: TrafficTotals) =
+            upload < previous.upload || download < previous.download
+    }
+
+    private data class TrafficCounterState(
+        val code: String,
+        val counterId: String,
+        val sequence: Long,
+        val base: TrafficTotals,
+        val lastAcknowledged: TrafficTotals?,
+        val pending: TrafficTotals?,
+    )
+
     private companion object {
         const val ACTIVATION_STORE = ACTIVATION_STORE_NAME
         const val KEY_CODE = "code"
@@ -74,6 +99,7 @@ class MainActivity : BaseActivity<MainDesign>() {
         const val KEY_UPDATE_VERSION = "update_version"
         const val KEY_CLIENT_ID = "client_id"
         const val KEY_PENDING_PRESENCE = "pending_presence"
+        const val KEY_TRAFFIC_COUNTER = "managed_traffic_counter_v2"
         const val KEY_EXPIRED_PROFILE_UUID = "expired_profile_uuid"
         // 订阅更新轮询：仅在已连接时运行，基础 10 分钟，失败指数退避到最多 1 小时。
         const val UPDATE_CHECK_INTERVAL_MILLIS = 600_000L
@@ -158,11 +184,26 @@ class MainActivity : BaseActivity<MainDesign>() {
         var lastSubscriptionUpdateCheck = 0L
         var nextHeartbeatAt = 0L
         var lastTrafficReportAt = 0L
-        var lastReportedTrafficTotal: Long? = null
-        var trafficCounterId = UUID.randomUUID().toString()
-        var trafficCounterSequence = 0L
-        var trafficCounterBase = 0L
-        var pendingTrafficTotal: Long? = null
+        val restoredTraffic = loadTrafficCounterState(savedActivationCode())
+        var lastReportedTrafficTotal = restoredTraffic?.lastAcknowledged
+        var trafficCounterId = restoredTraffic?.counterId ?: UUID.randomUUID().toString()
+        var trafficCounterSequence = restoredTraffic?.sequence ?: 0L
+        var trafficCounterBase = restoredTraffic?.base ?: TrafficTotals(0L, 0L)
+        var pendingTrafficTotal = restoredTraffic?.pending
+        var trafficReportInFlight = false
+
+        fun persistTrafficCounter() {
+            saveTrafficCounterState(
+                TrafficCounterState(
+                    code = savedActivationCode(),
+                    counterId = trafficCounterId,
+                    sequence = trafficCounterSequence,
+                    base = trafficCounterBase,
+                    lastAcknowledged = lastReportedTrafficTotal,
+                    pending = pendingTrafficTotal,
+                )
+            )
+        }
         // 订阅更新轮询：在途互斥 + 失败指数退避（叠加抖动），避免 web 掉线恢复后惊群打满服务器。
         var subscriptionUpdateInFlight = false
         var subscriptionFailures = 0
@@ -212,8 +253,9 @@ class MainActivity : BaseActivity<MainDesign>() {
                         Event.ClashStart -> {
                             trafficCounterId = UUID.randomUUID().toString()
                             trafficCounterSequence = 0L
-                            trafficCounterBase = 0L
+                            trafficCounterBase = TrafficTotals(0L, 0L)
                             pendingTrafficTotal = null
+                            persistTrafficCounter()
                             nextHeartbeatAt = System.currentTimeMillis() + nextHeartbeatDelayMillis()
                             launch { design.safeFetch() }
                             launch { sendClientHeartbeat("online") }
@@ -289,7 +331,7 @@ class MainActivity : BaseActivity<MainDesign>() {
                     val now = System.currentTimeMillis()
                     if (clashRunning) {
                         val trafficTotal = runCatching { design.fetchTraffic() }
-                            .getOrElse { lastReportedTrafficTotal ?: 0L }
+                            .getOrElse { lastReportedTrafficTotal ?: TrafficTotals(0L, 0L) }
                         if (lastReportedTrafficTotal == null) {
                             lastReportedTrafficTotal = trafficTotal
                             trafficCounterBase = trafficTotal
@@ -299,42 +341,61 @@ class MainActivity : BaseActivity<MainDesign>() {
                             launch { sendClientHeartbeat("online") }
                         }
                         if (now - lastTrafficReportAt >= TRAFFIC_REPORT_INTERVAL_MILLIS) {
-                            val previous = lastReportedTrafficTotal ?: trafficTotal
-                            val delta = (trafficTotal - previous).coerceAtLeast(0L)
-                            val cumulative = (trafficTotal - trafficCounterBase).coerceAtLeast(0L)
+                            var previous = lastReportedTrafficTotal ?: trafficTotal
+                            if (trafficTotal.regressedFrom(previous)) {
+                                trafficCounterId = UUID.randomUUID().toString()
+                                trafficCounterSequence = 0L
+                                trafficCounterBase = trafficTotal
+                                lastReportedTrafficTotal = trafficTotal
+                                pendingTrafficTotal = null
+                                persistTrafficCounter()
+                                previous = trafficTotal
+                            }
+                            val delta = trafficTotal - previous
+                            val cumulative = trafficTotal - trafficCounterBase
                             lastTrafficReportAt = now
-                            if (delta > 0L && delta <= MAX_TRAFFIC_REPORT_DELTA_BYTES) {
+                            if (!trafficReportInFlight && delta.total() > 0L && delta.total() <= MAX_TRAFFIC_REPORT_DELTA_BYTES) {
                                 val reportTotal = pendingTrafficTotal ?: cumulative
+                                val reportDelta = reportTotal - (previous - trafficCounterBase)
                                 val reportSequence = trafficCounterSequence + 1L
                                 pendingTrafficTotal = reportTotal
+                                persistTrafficCounter()
+                                trafficReportInFlight = true
                                 launch {
-                                    when (
-                                        sendClientTraffic(
-                                            delta,
-                                            trafficCounterId,
-                                            reportSequence,
-                                            reportTotal,
-                                        )
-                                    ) {
-                                        TrafficReportResult.Success -> {
-                                            trafficCounterSequence = reportSequence
-                                            pendingTrafficTotal = null
-                                            lastReportedTrafficTotal = trafficTotal
+                                    try {
+                                        when (
+                                            sendClientTraffic(
+                                                reportDelta,
+                                                trafficCounterId,
+                                                reportSequence,
+                                                reportTotal,
+                                            )
+                                        ) {
+                                            TrafficReportResult.Success -> {
+                                                trafficCounterSequence = reportSequence
+                                                pendingTrafficTotal = null
+                                                lastReportedTrafficTotal = trafficCounterBase + reportTotal
+                                                persistTrafficCounter()
+                                            }
+                                            TrafficReportResult.CounterReset -> {
+                                                trafficCounterId = UUID.randomUUID().toString()
+                                                trafficCounterSequence = 0L
+                                                trafficCounterBase = trafficTotal
+                                                pendingTrafficTotal = null
+                                                lastReportedTrafficTotal = trafficTotal
+                                                persistTrafficCounter()
+                                            }
+                                            TrafficReportResult.Limited -> {
+                                                pendingTrafficTotal = null
+                                                persistTrafficCounter()
+                                            }
+                                            TrafficReportResult.Failure -> Unit
                                         }
-                                        TrafficReportResult.CounterReset -> {
-                                            trafficCounterId = UUID.randomUUID().toString()
-                                            trafficCounterSequence = 0L
-                                            trafficCounterBase = trafficTotal
-                                            pendingTrafficTotal = null
-                                            lastReportedTrafficTotal = trafficTotal
-                                        }
-                                        TrafficReportResult.Limited -> {
-                                            pendingTrafficTotal = null
-                                        }
-                                        TrafficReportResult.Failure -> Unit
+                                    } finally {
+                                        trafficReportInFlight = false
                                     }
                                 }
-                            } else if (delta > MAX_TRAFFIC_REPORT_DELTA_BYTES) {
+                            } else if (delta.total() > MAX_TRAFFIC_REPORT_DELTA_BYTES) {
                                 lastReportedTrafficTotal = trafficTotal
                             }
                         }
@@ -533,13 +594,13 @@ class MainActivity : BaseActivity<MainDesign>() {
     }
 
     private suspend fun sendClientTraffic(
-        deltaBytes: Long,
+        deltaBytes: TrafficTotals,
         counterId: String,
         sequence: Long,
-        cumulativeBytes: Long,
+        cumulativeBytes: TrafficTotals,
     ): TrafficReportResult = withContext(Dispatchers.IO) {
         val code = savedActivationCode()
-        if (code.isBlank() || deltaBytes <= 0L) {
+        if (code.isBlank() || deltaBytes.total() <= 0L) {
             return@withContext TrafficReportResult.Failure
         }
         val appVersion = queryAppVersionName().asHeaderValue()
@@ -549,8 +610,8 @@ class MainActivity : BaseActivity<MainDesign>() {
             val body = JSONObject().apply {
                 put("counter_id", counterId)
                 put("sequence", sequence)
-                put("upload_total", 0L)
-                put("download_total", cumulativeBytes)
+                put("upload_total", cumulativeBytes.upload)
+                put("download_total", cumulativeBytes.download)
                 put("platform", "安卓手机")
                 put("app_name", "${EndpointResolver.clientName()}安卓端")
                 put("app_version", appVersion)
@@ -604,8 +665,8 @@ class MainActivity : BaseActivity<MainDesign>() {
             put("app_name", "${EndpointResolver.clientName()}安卓端")
             put("app_version", appVersion)
             put("device_name", "${Build.BRAND} ${Build.MODEL}")
-            put("upload_bytes", 0)
-            put("download_bytes", deltaBytes)
+            put("upload_bytes", deltaBytes.upload)
+            put("download_bytes", deltaBytes.download)
         }.toString().toByteArray(Charsets.UTF_8)
         val connection = (URL("${EndpointResolver.apiBase()}/api/client/traffic/$encoded").openConnection() as HttpURLConnection).apply {
             connectTimeout = 5000
@@ -629,6 +690,46 @@ class MainActivity : BaseActivity<MainDesign>() {
             connection.disconnect()
         }
         }
+    }
+
+    private fun loadTrafficCounterState(code: String): TrafficCounterState? {
+        if (code.isBlank()) return null
+        val raw = activationStore().getString(KEY_TRAFFIC_COUNTER, null) ?: return null
+        return runCatching {
+            val json = JSONObject(raw)
+            if (json.getString("code") != code) return null
+            fun totals(prefix: String): TrafficTotals? {
+                if (!json.has("${prefix}_upload") || json.isNull("${prefix}_upload")) return null
+                return TrafficTotals(
+                    json.getLong("${prefix}_upload").coerceAtLeast(0L),
+                    json.getLong("${prefix}_download").coerceAtLeast(0L),
+                )
+            }
+            TrafficCounterState(
+                code = code,
+                counterId = json.getString("counter_id"),
+                sequence = json.getLong("sequence").coerceAtLeast(0L),
+                base = totals("base") ?: TrafficTotals(0L, 0L),
+                lastAcknowledged = totals("last"),
+                pending = totals("pending"),
+            )
+        }.getOrNull()
+    }
+
+    private fun saveTrafficCounterState(state: TrafficCounterState) {
+        if (state.code.isBlank()) return
+        val json = JSONObject().apply {
+            put("code", state.code)
+            put("counter_id", state.counterId)
+            put("sequence", state.sequence)
+            put("base_upload", state.base.upload)
+            put("base_download", state.base.download)
+            put("last_upload", state.lastAcknowledged?.upload ?: JSONObject.NULL)
+            put("last_download", state.lastAcknowledged?.download ?: JSONObject.NULL)
+            put("pending_upload", state.pending?.upload ?: JSONObject.NULL)
+            put("pending_download", state.pending?.download ?: JSONObject.NULL)
+        }
+        activationStore().edit().putString(KEY_TRAFFIC_COUNTER, json.toString()).apply()
     }
 
     private suspend fun enforceClientLimit(message: String) {
@@ -693,9 +794,14 @@ class MainActivity : BaseActivity<MainDesign>() {
         }
     }
 
-    private suspend fun MainDesign.fetchTraffic(): Long {
+    private suspend fun MainDesign.fetchTraffic(): TrafficTotals {
         return withClash {
-            queryTrafficTotal().also { setForwarded(it) }.trafficTotalBytes()
+            queryTrafficTotal().also { setForwarded(it) }
+            val totals = queryTrafficTotalBytes()
+            TrafficTotals(
+                upload = totals.getOrElse(0) { 0L }.coerceAtLeast(0L),
+                download = totals.getOrElse(1) { 0L }.coerceAtLeast(0L),
+            )
         }
     }
 
