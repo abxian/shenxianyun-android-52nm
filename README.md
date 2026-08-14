@@ -200,6 +200,7 @@ shenxianyun://install-config?url=<encoded subscription url>&name=<encoded name>
 - 52nm 必须独立递增 `versionCode`/`versionName`，独立运行 Actions、创建本仓库标签和签名 Release，核验 APK 证书与 SHA-256。
 - 正式资产只进入 52nm 下载链（历史 Dufs 目录 `/jcjc`）并只更新 52nm `/api/app-version`；禁止写入神仙云 `/sxy` 或 sxnn 接口。
 - 每次分别记录 commit、tag、Actions、Release、Dufs、版本接口和真机覆盖升级；不得复用神仙云 APK 或发布状态。
+- `Build Android APK` 和 `Build Debug` 不再响应 `main` push；日常验证由维护者手动触发，Debug 仍可由 PR 触发，正式 Release 只由 `v*.*.*` 标签触发。
 
 ## 发布前检查
 
