@@ -207,12 +207,16 @@ def main() -> int:
                 return 0
             args.dufs_root.mkdir(parents=True, exist_ok=True)
             for name, asset in assets.items():
-                if name != "output-metadata.json":
+                if name != "output-metadata.json" and name not in ALIASES:
                     download(asset, stage / name, args.download_mirror, args.timeout, args.retries)
-            arm64 = assets[f"cmfa-{version}-meta-arm64-v8a-release.apk"]["digest"]
-            universal = assets[f"cmfa-{version}-meta-universal-release.apk"]["digest"]
-            if assets["wuaiyun.apk"]["digest"] != arm64 or assets["wuaiyunall.apk"]["digest"] != universal:
-                raise SyncError("fixed APK aliases do not match arm64/universal assets")
+            for alias, abi in ALIASES.items():
+                canonical = f"cmfa-{version}-meta-{abi}-release.apk"
+                if (
+                    assets[alias]["digest"] != assets[canonical]["digest"]
+                    or int(assets[alias]["size"]) != int(assets[canonical]["size"])
+                ):
+                    raise SyncError(f"fixed APK alias does not match its canonical asset: {alias}")
+                shutil.copy2(stage / canonical, stage / alias)
             timestamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
             backup = args.backup_root / f"52nm-android-sync-{args.tag}-{timestamp}"
             backup.mkdir(parents=True, mode=0o700)
