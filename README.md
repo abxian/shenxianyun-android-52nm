@@ -202,6 +202,7 @@ shenxianyun://install-config?url=<encoded subscription url>&name=<encoded name>
 - 每次分别记录 commit、tag、Actions、Release、Dufs、版本接口和真机覆盖升级；不得复用神仙云 APK 或发布状态。
 - `Build Android APK` 和 `Build Debug` 不再响应 `main` push；日常验证由维护者手动触发，Debug 仍可由 PR 触发，正式 Release 只由 `v*.*.*` 标签触发。
 - NAS 同步使用本仓库的 `scripts/nas-sync-android-release.py` 部署副本。先对新标签执行 `--dry-run`，再正式发布；脚本固定 52nm 仓库和独立 `/52nm` 目录，不接受神仙云资产，也不得再把 Android APK 写入 `/jcjc`。
+- `--tag` 可省略；省略时脚本只读取本仓库 GitHub `latest` 指向的最新正式稳定版（不会选择 draft/prerelease）。NAS 常用命令为 `android-sync-to-dufs.py --dry-run`，确认后执行 `android-sync-to-dufs.py`。
 - 脚本强制正式 Release、稳定标签、版本递增、8 个必要资产、metadata 版本/versionCode、GitHub SHA-256 和固定别名一致性；完整暂存后动态备份并原子替换，失败自动恢复。
 
 ## 发布前检查

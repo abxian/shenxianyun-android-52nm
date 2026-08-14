@@ -184,7 +184,7 @@ def atomic_copy(source: Path, destination: Path) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--tag", required=True)
+    parser.add_argument("--tag", help="stable release tag; omitted means GitHub latest stable release")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--allow-downgrade", action="store_true")
     parser.add_argument("--dufs-root", type=Path, default=DEFAULT_DUFS_ROOT)
@@ -198,22 +198,29 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    requested = version_tuple(args.tag)
+    if args.tag:
+        version_tuple(args.tag)
     args.work_root.mkdir(parents=True, exist_ok=True)
     with (args.work_root / "sync.lock").open("w") as lock:
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-        release = fetch_json(f"{API_ROOT}/repos/{REPOSITORY}/releases/tags/{args.tag}", args.timeout, args.retries)
-        assets = validate_release(release, args.tag)
+        release_url = (
+            f"{API_ROOT}/repos/{REPOSITORY}/releases/tags/{args.tag}"
+            if args.tag else f"{API_ROOT}/repos/{REPOSITORY}/releases/latest"
+        )
+        release = fetch_json(release_url, args.timeout, args.retries)
+        tag = args.tag or str(release.get("tag_name") or "")
+        requested = version_tuple(tag)
+        assets = validate_release(release, tag)
         installed = current_version(args.dufs_root)
         if installed and requested <= installed and not args.allow_downgrade:
-            raise SyncError(f"refusing non-upgrade {args.tag}; installed is v{'.'.join(map(str, installed))}")
+            raise SyncError(f"refusing non-upgrade {tag}; installed is v{'.'.join(map(str, installed))}")
         with tempfile.TemporaryDirectory(prefix="android-sync-", dir=args.work_root) as temporary:
             stage = Path(temporary)
             metadata_asset = assets["output-metadata.json"]
             stage_asset(metadata_asset, stage / "output-metadata.json", args.dufs_root, args.download_mirror, args.timeout, args.retries)
-            version, version_code = validate_metadata(stage / "output-metadata.json", args.tag)
+            version, version_code = validate_metadata(stage / "output-metadata.json", tag)
             if args.dry_run:
-                print(f"DRY-RUN OK: {REPOSITORY} {args.tag} ({len(assets)} assets, versionCode={version_code}) -> {args.dufs_root}")
+                print(f"DRY-RUN OK: {REPOSITORY} {tag} ({len(assets)} assets, versionCode={version_code}) -> {args.dufs_root}")
                 return 0
             args.dufs_root.mkdir(parents=True, exist_ok=True)
             for name, asset in assets.items():
@@ -228,7 +235,7 @@ def main() -> int:
                     raise SyncError(f"fixed APK alias does not match its canonical asset: {alias}")
                 shutil.copy2(stage / canonical, stage / alias)
             timestamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
-            backup = args.backup_root / f"52nm-android-sync-{args.tag}-{timestamp}"
+            backup = args.backup_root / f"52nm-android-sync-{tag}-{timestamp}"
             backup.mkdir(parents=True, mode=0o700)
             previous = managed_existing(args.dufs_root)
             for path in previous:
@@ -244,7 +251,7 @@ def main() -> int:
                     if destination not in published:
                         atomic_copy(stage / release_name, destination)
                         published.append(destination)
-                state = {"tag": args.tag, "version": version, "versionCode": version_code, "repository": REPOSITORY}
+                state = {"tag": tag, "version": version, "versionCode": version_code, "repository": REPOSITORY}
                 state_stage = stage / STATE_FILE
                 state_stage.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n")
                 state_destination = args.dufs_root / STATE_FILE
@@ -262,7 +269,7 @@ def main() -> int:
             sums = backup / "PUBLISHED_SHA256SUMS"
             published_names = sorted(set(assets) | set(DUFS_ALIASES))
             sums.write_text("".join(f"{sha256(args.dufs_root / name)}  {name}\n" for name in published_names))
-            print(f"PUBLISHED OK: {REPOSITORY} {args.tag} -> {args.dufs_root}; backup={backup}")
+            print(f"PUBLISHED OK: {REPOSITORY} {tag} -> {args.dufs_root}; backup={backup}")
     return 0
 
 
