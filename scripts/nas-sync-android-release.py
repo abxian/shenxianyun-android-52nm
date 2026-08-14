@@ -21,6 +21,7 @@ DEFAULT_DUFS_ROOT = Path("/vol1/dufs/data/52nm")
 DEFAULT_WORK_ROOT = Path("/vol1/1000/docker-projects/shenxianyun-release-sync/work-android-52nm")
 DEFAULT_BACKUP_ROOT = Path("/vol1/1000/docker-projects/backups")
 ALIASES = {"wuaiyun.apk": "arm64-v8a", "wuaiyunall.apk": "universal"}
+DUFS_ALIASES = {"wuaiyun.apk": "wuaiyun.apk", "wuaiyunall.apk": "wuaiyunall.apk"}
 STATE_FILE = ".android-52nm-release-state.json"
 API_ROOT = "https://api.github.com"
 TAG_RE = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
@@ -159,7 +160,7 @@ def current_version(root: Path) -> tuple[int, int, int] | None:
 
 
 def managed_existing(root: Path) -> list[Path]:
-    files = [root / name for name in (*ALIASES.keys(), "output-metadata.json", STATE_FILE)]
+    files = [root / name for name in (*ALIASES.keys(), *DUFS_ALIASES.keys(), "output-metadata.json", STATE_FILE)]
     files.extend(root.glob("cmfa-*-meta-*-release.apk"))
     return sorted({path for path in files if path.exists()})
 
@@ -229,6 +230,11 @@ def main() -> int:
                     destination = args.dufs_root / name
                     atomic_copy(stage / name, destination)
                     published.append(destination)
+                for destination_name, release_name in DUFS_ALIASES.items():
+                    destination = args.dufs_root / destination_name
+                    if destination not in published:
+                        atomic_copy(stage / release_name, destination)
+                        published.append(destination)
                 state = {"tag": args.tag, "version": version, "versionCode": version_code, "repository": REPOSITORY}
                 state_stage = stage / STATE_FILE
                 state_stage.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n")
@@ -245,7 +251,8 @@ def main() -> int:
                     atomic_copy(saved, args.dufs_root / saved.name)
                 raise
             sums = backup / "PUBLISHED_SHA256SUMS"
-            sums.write_text("".join(f"{sha256(args.dufs_root / name)}  {name}\n" for name in sorted(assets)))
+            published_names = sorted(set(assets) | set(DUFS_ALIASES))
+            sums.write_text("".join(f"{sha256(args.dufs_root / name)}  {name}\n" for name in published_names))
             print(f"PUBLISHED OK: {REPOSITORY} {args.tag} -> {args.dufs_root}; backup={backup}")
     return 0
 

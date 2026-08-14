@@ -18,6 +18,7 @@ class ReleaseSyncTests(unittest.TestCase):
     def test_52nm_has_an_independent_target(self):
         self.assertEqual(str(sync.DEFAULT_DUFS_ROOT), "/vol1/dufs/data/52nm")
         self.assertNotIn("jcjc", str(sync.DEFAULT_DUFS_ROOT))
+        self.assertEqual(sync.DUFS_ALIASES["wuaiyun.apk"], "wuaiyun.apk")
 
     def test_only_stable_tags_are_accepted(self):
         self.assertEqual(sync.version_tuple("v2.11.50"), (2, 11, 50))
