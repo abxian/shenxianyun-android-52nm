@@ -134,6 +134,15 @@ def download(asset: dict, target: Path, mirror: str, timeout: int, retries: int)
     raise SyncError(f"failed to download {asset['name']}: {last_error}")
 
 
+def stage_asset(asset: dict, target: Path, existing_root: Path, mirror: str, timeout: int, retries: int) -> None:
+    existing = existing_root / asset["name"]
+    expected = asset["digest"].split(":", 1)[1]
+    if existing.is_file() and existing.stat().st_size == int(asset["size"]) and sha256(existing) == expected:
+        shutil.copy2(existing, target)
+        return
+    download(asset, target, mirror, timeout, retries)
+
+
 def validate_metadata(path: Path, tag: str) -> tuple[str, int]:
     metadata = json.loads(path.read_text())
     elements = metadata.get("elements") or []
@@ -201,7 +210,7 @@ def main() -> int:
         with tempfile.TemporaryDirectory(prefix="android-sync-", dir=args.work_root) as temporary:
             stage = Path(temporary)
             metadata_asset = assets["output-metadata.json"]
-            download(metadata_asset, stage / "output-metadata.json", args.download_mirror, args.timeout, args.retries)
+            stage_asset(metadata_asset, stage / "output-metadata.json", args.dufs_root, args.download_mirror, args.timeout, args.retries)
             version, version_code = validate_metadata(stage / "output-metadata.json", args.tag)
             if args.dry_run:
                 print(f"DRY-RUN OK: {REPOSITORY} {args.tag} ({len(assets)} assets, versionCode={version_code}) -> {args.dufs_root}")
@@ -209,7 +218,7 @@ def main() -> int:
             args.dufs_root.mkdir(parents=True, exist_ok=True)
             for name, asset in assets.items():
                 if name != "output-metadata.json" and name not in ALIASES:
-                    download(asset, stage / name, args.download_mirror, args.timeout, args.retries)
+                    stage_asset(asset, stage / name, args.dufs_root, args.download_mirror, args.timeout, args.retries)
             for alias, abi in ALIASES.items():
                 canonical = f"cmfa-{version}-meta-{abi}-release.apk"
                 if (
