@@ -45,16 +45,23 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def fetch_json(url: str, timeout: int) -> dict:
+def fetch_json(url: str, timeout: int, retries: int = 3) -> dict:
     token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
     headers = {"Accept": "application/vnd.github+json", "User-Agent": "shenxianyun-android-sync"}
     if token:
         headers["Authorization"] = f"Bearer {token}"
-    try:
-        with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=timeout) as response:
-            return json.loads(response.read().decode())
-    except urllib.error.HTTPError as error:
-        raise SyncError(f"GitHub API {error.code}: {error.read(300).decode(errors='replace')}") from error
+    last_error: Exception | None = None
+    for _ in range(max(1, retries)):
+        try:
+            with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=timeout) as response:
+                return json.loads(response.read().decode())
+        except urllib.error.HTTPError as error:
+            if 400 <= error.code < 500 and error.code != 429:
+                raise SyncError(f"GitHub API {error.code}: {error.read(300).decode(errors='replace')}") from error
+            last_error = error
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as error:
+            last_error = error
+    raise SyncError(f"failed to query GitHub release API after {max(1, retries)} attempts: {last_error}")
 
 
 def required_names(tag: str) -> set[str]:
@@ -185,7 +192,7 @@ def main() -> int:
     args.work_root.mkdir(parents=True, exist_ok=True)
     with (args.work_root / "sync.lock").open("w") as lock:
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-        release = fetch_json(f"{API_ROOT}/repos/{REPOSITORY}/releases/tags/{args.tag}", args.timeout)
+        release = fetch_json(f"{API_ROOT}/repos/{REPOSITORY}/releases/tags/{args.tag}", args.timeout, args.retries)
         assets = validate_release(release, args.tag)
         installed = current_version(args.dufs_root)
         if installed and requested <= installed and not args.allow_downgrade:
