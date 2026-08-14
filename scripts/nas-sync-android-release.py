@@ -94,21 +94,35 @@ def download(asset: dict, target: Path, mirror: str, timeout: int, retries: int)
     for _ in range(retries):
         for candidate in urls:
             part = target.with_suffix(target.suffix + ".part")
-            part.unlink(missing_ok=True)
             try:
-                request = urllib.request.Request(candidate, headers={"User-Agent": "shenxianyun-android-sync"})
-                with urllib.request.urlopen(request, timeout=timeout) as response, part.open("wb") as output:
-                    shutil.copyfileobj(response, output, 1024 * 1024)
-                if part.stat().st_size != int(asset["size"]):
+                expected_size = int(asset["size"])
+                offset = part.stat().st_size if part.exists() else 0
+                if offset > expected_size:
+                    part.unlink()
+                    offset = 0
+                headers = {"User-Agent": "shenxianyun-android-sync"}
+                if offset:
+                    headers["Range"] = f"bytes={offset}-"
+                request = urllib.request.Request(candidate, headers=headers)
+                with urllib.request.urlopen(request, timeout=timeout) as response:
+                    resumed = offset > 0 and getattr(response, "status", None) == 206
+                    mode = "ab" if resumed else "wb"
+                    with part.open(mode) as output:
+                        shutil.copyfileobj(response, output, 1024 * 1024)
+                actual_size = part.stat().st_size
+                if actual_size < expected_size:
+                    raise SyncError(f"incomplete download for {asset['name']}: {actual_size}/{expected_size}")
+                if actual_size != expected_size:
+                    part.unlink(missing_ok=True)
                     raise SyncError(f"size mismatch for {asset['name']}")
                 expected = asset["digest"].split(":", 1)[1]
                 if sha256(part) != expected:
+                    part.unlink(missing_ok=True)
                     raise SyncError(f"SHA-256 mismatch for {asset['name']}")
                 os.replace(part, target)
                 return
             except Exception as error:  # retry mirrors and transient failures
                 last_error = error
-                part.unlink(missing_ok=True)
     raise SyncError(f"failed to download {asset['name']}: {last_error}")
 
 
