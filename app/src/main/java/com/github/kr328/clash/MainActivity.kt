@@ -107,7 +107,9 @@ class MainActivity : BaseActivity<MainDesign>() {
         const val HEARTBEAT_INTERVAL_MILLIS = 120_000L
         const val HEARTBEAT_JITTER_MILLIS = 20_000L
         const val EXPIRY_SYNC_INTERVAL_MILLIS = 60_000L
-        const val TRAFFIC_REPORT_INTERVAL_MILLIS = 60_000L
+        const val TRAFFIC_REPORT_INTERVAL_MILLIS = 300_000L
+        const val TRAFFIC_REPORT_JITTER_MILLIS = 60_000L
+        const val TRAFFIC_REPORT_MAX_BACKOFF_MILLIS = 1_800_000L
         const val MAX_TRAFFIC_REPORT_DELTA_BYTES = 5L * 1024 * 1024 * 1024
         const val EXPIRED_NODE_NAME = "提取码到期，请续费使用"
         const val EXPIRED_PROFILE_NAME = "提取码已到期"
@@ -118,6 +120,9 @@ class MainActivity : BaseActivity<MainDesign>() {
 
     private fun nextHeartbeatDelayMillis(): Long =
         HEARTBEAT_INTERVAL_MILLIS + (Math.random() * HEARTBEAT_JITTER_MILLIS).toLong()
+
+    private fun nextTrafficReportDelayMillis(): Long =
+        TRAFFIC_REPORT_INTERVAL_MILLIS + (Math.random() * TRAFFIC_REPORT_JITTER_MILLIS).toLong()
 
     private fun savePendingPresence(code: String, status: String): String {
         val id = UUID.randomUUID().toString()
@@ -183,7 +188,8 @@ class MainActivity : BaseActivity<MainDesign>() {
         val ticker = ticker(TimeUnit.SECONDS.toMillis(1))
         var lastSubscriptionUpdateCheck = 0L
         var nextHeartbeatAt = 0L
-        var lastTrafficReportAt = 0L
+        var nextTrafficReportAt = 0L
+        var trafficReportFailures = 0
         val restoredTraffic = loadTrafficCounterState(savedActivationCode())
         var lastReportedTrafficTotal = restoredTraffic?.lastAcknowledged
         var trafficCounterId = restoredTraffic?.counterId ?: UUID.randomUUID().toString()
@@ -257,13 +263,17 @@ class MainActivity : BaseActivity<MainDesign>() {
                             pendingTrafficTotal = null
                             persistTrafficCounter()
                             nextHeartbeatAt = System.currentTimeMillis() + nextHeartbeatDelayMillis()
+                            nextTrafficReportAt = System.currentTimeMillis() +
+                                5_000L + (Math.random() * 25_000L).toLong()
+                            trafficReportFailures = 0
                             launch { design.safeFetch() }
                             launch { sendClientHeartbeat("online") }
                         }
                         Event.ClashStop -> {
                             launch { design.safeFetch() }
                             nextHeartbeatAt = 0L
-                            lastTrafficReportAt = 0L
+                            nextTrafficReportAt = 0L
+                            trafficReportFailures = 0
                             lastReportedTrafficTotal = null
                             pendingTrafficTotal = null
                             launch { sendClientHeartbeat("offline") }
@@ -340,7 +350,7 @@ class MainActivity : BaseActivity<MainDesign>() {
                             nextHeartbeatAt = now + nextHeartbeatDelayMillis()
                             launch { sendClientHeartbeat("online") }
                         }
-                        if (now - lastTrafficReportAt >= TRAFFIC_REPORT_INTERVAL_MILLIS) {
+                        if (now >= nextTrafficReportAt) {
                             var previous = lastReportedTrafficTotal ?: trafficTotal
                             if (trafficTotal.regressedFrom(previous)) {
                                 trafficCounterId = UUID.randomUUID().toString()
@@ -353,7 +363,7 @@ class MainActivity : BaseActivity<MainDesign>() {
                             }
                             val delta = trafficTotal - previous
                             val cumulative = trafficTotal - trafficCounterBase
-                            lastTrafficReportAt = now
+                            nextTrafficReportAt = now + nextTrafficReportDelayMillis()
                             if (!trafficReportInFlight && delta.total() > 0L && delta.total() <= MAX_TRAFFIC_REPORT_DELTA_BYTES) {
                                 val reportTotal = pendingTrafficTotal ?: cumulative
                                 val reportDelta = reportTotal - (previous - trafficCounterBase)
@@ -372,12 +382,14 @@ class MainActivity : BaseActivity<MainDesign>() {
                                             )
                                         ) {
                                             TrafficReportResult.Success -> {
+                                                trafficReportFailures = 0
                                                 trafficCounterSequence = reportSequence
                                                 pendingTrafficTotal = null
                                                 lastReportedTrafficTotal = trafficCounterBase + reportTotal
                                                 persistTrafficCounter()
                                             }
                                             TrafficReportResult.CounterReset -> {
+                                                trafficReportFailures = 0
                                                 trafficCounterId = UUID.randomUUID().toString()
                                                 trafficCounterSequence = 0L
                                                 trafficCounterBase = trafficTotal
@@ -386,10 +398,18 @@ class MainActivity : BaseActivity<MainDesign>() {
                                                 persistTrafficCounter()
                                             }
                                             TrafficReportResult.Limited -> {
+                                                trafficReportFailures = 0
                                                 pendingTrafficTotal = null
                                                 persistTrafficCounter()
                                             }
-                                            TrafficReportResult.Failure -> Unit
+                                            TrafficReportResult.Failure -> {
+                                                trafficReportFailures = minOf(trafficReportFailures + 1, 4)
+                                                val retryDelay = minOf(
+                                                    TRAFFIC_REPORT_INTERVAL_MILLIS shl trafficReportFailures,
+                                                    TRAFFIC_REPORT_MAX_BACKOFF_MILLIS,
+                                                ) + (Math.random() * TRAFFIC_REPORT_JITTER_MILLIS).toLong()
+                                                nextTrafficReportAt = System.currentTimeMillis() + retryDelay
+                                            }
                                         }
                                     } finally {
                                         trafficReportInFlight = false

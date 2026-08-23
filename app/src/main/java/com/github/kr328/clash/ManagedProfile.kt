@@ -6,6 +6,7 @@ import android.os.Build
 import android.security.KeyPairGeneratorSpec
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
+import android.provider.Settings
 import android.util.Base64
 import com.github.kr328.clash.service.model.Profile
 import com.github.kr328.clash.util.withProfile
@@ -17,6 +18,7 @@ import java.net.URL
 import java.math.BigInteger
 import java.security.KeyPairGenerator
 import java.security.KeyStore
+import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.Calendar
 import javax.crypto.Cipher
@@ -35,6 +37,32 @@ private const val MANAGED_CREDENTIAL_KEY = "managed_credentials_v2"
 private const val MANAGED_KEY_ALIAS = "shenxianyun-managed-subscription-v2"
 private const val MANAGED_WRAPPED_KEY = "managed_wrapped_key_v2"
 private const val MANAGED_RSA_ALIAS = "shenxianyun-managed-subscription-rsa-v2"
+private const val DEVICE_KEY_FALLBACK = "device_key_fallback_v1"
+
+/**
+ * 生成应用作用域的伪匿名设备键。原始 ANDROID_ID 不出端；服务端还会再次 HMAC 后入库。
+ * 极少数无法取得 ANDROID_ID 的设备回退到受备份保护的随机值。
+ */
+internal fun Context.stableDeviceKey(): String {
+    val androidId = runCatching {
+        Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID)
+    }.getOrNull()?.trim().orEmpty().takeUnless {
+        it.isBlank() || it == "9774d56d682e549c"
+    }
+    val source = if (androidId != null) {
+        "android-id:v1:$packageName:$androidId"
+    } else {
+        val store = getSharedPreferences(ACTIVATION_STORE_NAME, Context.MODE_PRIVATE)
+        val saved = store.getString(DEVICE_KEY_FALLBACK, "")?.trim().orEmpty()
+        val fallback = saved.ifBlank { UUID.randomUUID().toString() }
+        if (saved.isBlank()) store.edit().putString(DEVICE_KEY_FALLBACK, fallback).apply()
+        "fallback:v1:$packageName:$fallback"
+    }
+    val digest = MessageDigest.getInstance("SHA-256")
+        .digest(source.toByteArray(Charsets.UTF_8))
+        .joinToString("") { "%02x".format(it.toInt() and 0xff) }
+    return "and-$digest"
+}
 
 internal data class ManagedCredentials(
     val accessCode: String,
@@ -90,6 +118,7 @@ internal suspend fun Context.exchangeManagedImportTicket(
     val body = JSONObject()
         .put("ticket", ticket)
         .put("client_id", clientId)
+        .put("device_key", stableDeviceKey())
         .put("platform", "android")
         .toString()
         .toByteArray(Charsets.UTF_8)
