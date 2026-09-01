@@ -314,7 +314,9 @@ Release，不上传或覆盖原神仙云 Dufs，也不写入旧客户端仓库�
 ### 五、流程速记（每次发布都照做）
 
 1. 改代码 → 改 `build.gradle.kts` 的 `versionName` / `versionCode`（code 必须递增）。
-2. `git commit` → `git push origin main`，自动触发 Build Android APK。
+2. `git commit` → `git push origin main`。**推送不再自动构建**——`Build Android APK`
+   与 `Build Debug APK` 自 c07c053 起改为仅 `workflow_dispatch`，需在 Actions 页手动运行
+   （或 `gh workflow run build-apk-simple.yaml --ref main`）。`Release Android` 仍由 tag 触发，第 4 步不变。
 3. 等 Action 跑完 → 下载 artifact `shenxianyun-android-apk` 并解压。
 4. 先真机验证；获得正式发布批准后，推送 `v<versionName>` 标签。
 5. 等 `Release Android` 成功，核对 Release 为非 draft、非 prerelease，

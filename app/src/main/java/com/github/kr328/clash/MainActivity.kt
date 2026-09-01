@@ -61,7 +61,14 @@ class MainActivity : BaseActivity<MainDesign>() {
     private enum class TrafficReportResult {
         Success,
         CounterReset,
-        Limited,
+        // 服务端有两条 403 traffic_limit 路径，对客户端状态机的含义完全相反：
+        //   LimitedAfterAccept —— 本次上报已入账（traffic_counters 的 last_sequence 已推进），之后才判定越额。
+        //                          客户端必须像 Success 一样推进 sequence 和基线，否则下次会复用同一
+        //                          sequence，被服务端判为 duplicate 丢弃，额度恢复后的第一段流量就没了。
+        //   LimitedBeforeAccept —— 请求前就已越额，服务端直接拒绝，没有任何写入。此时不能推进 sequence。
+        // 区分依据：只有落账那条路径的响应体里带 accepted_upload / accepted_download 字段。
+        LimitedAfterAccept,
+        LimitedBeforeAccept,
         Failure,
     }
 
@@ -385,7 +392,17 @@ class MainActivity : BaseActivity<MainDesign>() {
                                                 lastReportedTrafficTotal = trafficTotal
                                                 persistTrafficCounter()
                                             }
-                                            TrafficReportResult.Limited -> {
+                                            TrafficReportResult.LimitedAfterAccept -> {
+                                                // 服务端已收下这一笔，状态推进方式与 Success 完全一致；
+                                                // 只是额外触发了限速。漏掉这一步会导致额度恢复后首段流量被
+                                                // 当作 duplicate 丢弃。
+                                                trafficCounterSequence = reportSequence
+                                                pendingTrafficTotal = null
+                                                lastReportedTrafficTotal = trafficCounterBase + reportTotal
+                                                persistTrafficCounter()
+                                            }
+                                            TrafficReportResult.LimitedBeforeAccept -> {
+                                                // 服务端没有写入，保持 sequence 与基线不动，等额度恢复后重报。
                                                 pendingTrafficTotal = null
                                                 persistTrafficCounter()
                                             }
@@ -648,7 +665,12 @@ class MainActivity : BaseActivity<MainDesign>() {
                             json?.optString("message", "流量额度已用尽，代理已停止")
                                 ?: "流量额度已用尽，代理已停止",
                         )
-                        TrafficReportResult.Limited
+                        // 带 accepted_* 字段 = 服务端已把本次增量落账后才返回 403
+                        if (json != null && json.has("accepted_upload") && json.has("accepted_download")) {
+                            TrafficReportResult.LimitedAfterAccept
+                        } else {
+                            TrafficReportResult.LimitedBeforeAccept
+                        }
                     }
                     else -> TrafficReportResult.Failure
                 }
