@@ -95,7 +95,7 @@ jobs:
           target_commitish: ${{ github.sha }}
           prerelease: false
           generate_release_notes: true
-          body_path: docs/RELEASE_2.11.48.md
+          body_path: docs/RELEASE_${{ env.VERSION }}.md
           files: |
             app/build/outputs/apk/meta/release/*.apk
             app/build/outputs/apk/meta/release/output-metadata.json
