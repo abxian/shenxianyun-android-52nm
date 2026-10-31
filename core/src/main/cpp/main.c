@@ -85,7 +85,7 @@ Java_com_github_kr328_clash_core_bridge_Bridge_nativeQueryTrafficTotalBytes(JNIE
     jlong values[2];
     jlongArray result;
 
-    queryTotal(&upload, &download);
+    queryProxyTotal(&upload, &download);
     values[0] = (jlong) upload;
     values[1] = (jlong) download;
     result = (*env)->NewLongArray(env, 2);
@@ -543,4 +543,9 @@ Java_com_github_kr328_clash_core_bridge_Bridge_nativeCoreVersion(JNIEnv *env, jo
     char* Version = make_String(GIT_VERSION);
 
     return new_string(Version);
+}
+
+JNIEXPORT void JNICALL
+Java_com_github_kr328_clash_core_bridge_Bridge_nativeStopAccountingTraffic(JNIEnv *env, jobject thiz) {
+    stopAccountingTraffic();
 }

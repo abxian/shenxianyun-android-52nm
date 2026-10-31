@@ -114,6 +114,12 @@ class ExternalControlActivity : Activity(), CoroutineScope by MainScope() {
         val content = fetchManagedSubscription(normalized)
         val uuid = installManagedProfile(accessCode, content)
         saveManagedCredentials(normalized)
+        val reportConfig=org.json.JSONObject().put("code",accessCode).put("client_id",clientId)
+            .put("api_base",normalized.apiBase).put("device_token",normalized.deviceToken)
+            .put("profile",uuid.toString()).put("version",packageManager.getPackageInfo(packageName,0).versionName.orEmpty())
+            .put("device","${android.os.Build.BRAND} ${android.os.Build.MODEL}")
+        com.github.kr328.clash.service.traffic.ServiceTrafficAccounting.configure(this,reportConfig.toString())
+
         activationStore().edit()
             .putString(KEY_CODE, accessCode)
             .putString(KEY_PROFILE_UUID, uuid.toString())

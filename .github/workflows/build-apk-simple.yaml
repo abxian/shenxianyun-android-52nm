@@ -77,7 +77,11 @@ jobs:
           fi
 
       - name: Build APK
-        run: ./gradlew --no-daemon app:assembleMetaRelease
+        run: |
+          python3 scripts/test-access-recovery.py
+          python3 scripts/test-service-traffic.py
+          python3 scripts/test-startup-refresh.py
+          ./gradlew --no-daemon :app:testMetaDebugUnitTest :service:testMetaDebugUnitTest app:assembleMetaRelease
 
       - name: Upload APK
         uses: actions/upload-artifact@v7

@@ -26,6 +26,8 @@ object Clash {
         Bridge.nativeReset()
     }
 
+    fun stopAccountingTraffic() { Bridge.nativeStopAccountingTraffic() }
+
     fun forceGc() {
         Bridge.nativeForceGc()
     }

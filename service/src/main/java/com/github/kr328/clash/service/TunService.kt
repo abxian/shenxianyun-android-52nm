@@ -27,6 +27,7 @@ class TunService : VpnService(), CoroutineScope by CoroutineScope(Dispatchers.De
     private var reason: String? = null
 
     private val runtime = clashRuntime {
+        com.github.kr328.clash.service.traffic.ServiceTrafficAccounting.begin(self)
         val store = ServiceStore(self)
 
         val close = install(CloseModule(self))
@@ -42,6 +43,7 @@ class TunService : VpnService(), CoroutineScope by CoroutineScope(Dispatchers.De
         install(AppListCacheModule(self))
         install(TimeZoneModule(self))
         install(SuspendModule(self))
+        install(TrafficReportingModule(self))
 
         try {
             tun.open()
@@ -73,6 +75,7 @@ class TunService : VpnService(), CoroutineScope by CoroutineScope(Dispatchers.De
             reason = e.message
         } finally {
             withContext(NonCancellable) {
+                runCatching { com.github.kr328.clash.service.traffic.ServiceTrafficAccounting.finish(self) }
                 tun.close()
 
                 stopSelf()

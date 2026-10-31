@@ -315,4 +315,5 @@
     <string name="shortcut_start_long">启动 Clash 服务</string>
     <string name="shortcut_stop_short">停止 Clash</string>
     <string name="shortcut_stop_long">停止 Clash 服务</string>
+    <string name="activation_expiry_pending">到期时间：待同步</string>
 </resources>

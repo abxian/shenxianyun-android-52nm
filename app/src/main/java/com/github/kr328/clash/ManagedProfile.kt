@@ -2,6 +2,10 @@ package com.github.kr328.clash
 
 import android.content.Context
 import android.net.Uri
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
+import android.net.Network
+import java.io.IOException
 import android.os.Build
 import android.security.KeyPairGeneratorSpec
 import android.security.keystore.KeyGenParameterSpec
@@ -249,26 +253,48 @@ internal fun Context.clearManagedCredentials() {
         .apply()
 }
 
+internal class ManagedSubscriptionUnauthorized : IllegalStateException("设备凭据已失效，请重新验证提取码")
+
 internal suspend fun Context.fetchManagedSubscription(
     credentials: ManagedCredentials,
 ): String = withContext(Dispatchers.IO) {
-    val connection = (URL(credentials.subscriptionUrl).openConnection() as HttpURLConnection).apply {
-        connectTimeout = 12_000
-        readTimeout = 12_000
-        requestMethod = "GET"
-        setRequestProperty("Authorization", "Bearer ${credentials.deviceToken}")
-        setRequestProperty("User-Agent", "Shenxianyun-Android/Managed")
+    // Bind the download to an underlying network when a VPN is active. This avoids
+    // depending on the very nodes being refreshed; the default route remains a fallback.
+    val manager = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+    val underlying = manager.allNetworks.filter { network ->
+        manager.getNetworkCapabilities(network)?.let {
+            it.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+                it.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+        } == true
     }
-    try {
-        if (connection.responseCode !in 200..299) {
-            throw IllegalStateException("受管订阅获取失败，请重新导入提取码")
+    val routes: List<Network?> = underlying + listOf(null)
+    var failure: IOException? = null
+    for (network in routes) {
+        var connection: HttpURLConnection? = null
+        try {
+            val url = URL(credentials.subscriptionUrl)
+            connection = ((network?.openConnection(url) ?: url.openConnection()) as HttpURLConnection).apply {
+                connectTimeout = 12_000
+                readTimeout = 12_000
+                requestMethod = "GET"
+                instanceFollowRedirects = false
+                setRequestProperty("Authorization", "Bearer ${credentials.deviceToken}")
+                setRequestProperty("User-Agent", "Shenxianyun-Android/Managed")
+            }
+            if (connection.responseCode == 401) throw ManagedSubscriptionUnauthorized()
+            if (connection.responseCode !in 200..299) {
+                throw IllegalStateException("受管订阅获取失败，请重新导入提取码")
+            }
+            return@withContext connection.inputStream.bufferedReader().use { it.readText() }
+                .takeIf { it.isNotBlank() }
+                ?: throw IllegalStateException("受管订阅内容为空")
+        } catch (e: IOException) {
+            failure = e
+        } finally {
+            connection?.disconnect()
         }
-        connection.inputStream.bufferedReader().use { it.readText() }
-            .takeIf { it.isNotBlank() }
-            ?: throw IllegalStateException("受管订阅内容为空")
-    } finally {
-        connection.disconnect()
     }
+    throw failure ?: IOException("订阅网络不可用，已保留原配置")
 }
 
 internal suspend fun Context.installManagedProfile(
@@ -313,3 +339,41 @@ internal fun Context.isManagedProfile(uuid: UUID): Boolean =
 
 internal fun subscriptionRetryDelayMillis(retryNumber: Int): Long =
     (1_200L shl (retryNumber - 1).coerceAtLeast(0)).coerceAtMost(4_800L)
+
+
+internal class ManagedStateRetryAfter(val delayMillis: Long) : IllegalStateException("服务端要求稍后检查")
+
+/** Status must remain reachable when the active tunnel's nodes are blocked. */
+internal suspend fun Context.readManagedUpdateState(code: String, clientId: String): Pair<Int, JSONObject> = withContext(Dispatchers.IO) {
+    val encoded = java.net.URLEncoder.encode(code, "UTF-8").replace("+", "%20")
+    val cid = java.net.URLEncoder.encode(clientId, "UTF-8")
+    val manager = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+    val underlying = manager.allNetworks.filter { network ->
+        manager.getNetworkCapabilities(network)?.let {
+            it.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) && it.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+        } == true
+    }.take(1)
+    var failure: IOException? = null
+    for (network in underlying + listOf<Network?>(null)) {
+        var connection: HttpURLConnection? = null
+        try {
+            val url = URL("${EndpointResolver.apiBase()}/api/update-state/$encoded?client_id=$cid")
+            connection = ((network?.openConnection(url) ?: url.openConnection()) as HttpURLConnection).apply {
+                connectTimeout = 8_000; readTimeout = 8_000; requestMethod = "GET"
+                instanceFollowRedirects = false
+                setRequestProperty("X-Client-Id", clientId)
+                setRequestProperty("User-Agent", "Shenxianyun-Android/Managed")
+                setRequestProperty("Cache-Control", "no-cache")
+            }
+            val status = connection.responseCode
+            if (status == 429 || status == 503) {
+                val seconds = connection.getHeaderField("Retry-After")?.toLongOrNull() ?: 30L
+                throw ManagedStateRetryAfter(seconds.coerceIn(1L, 3600L) * 1000L)
+            }
+            val stream = if (status in 200..299) connection.inputStream else connection.errorStream
+            return@withContext status to JSONObject(stream?.bufferedReader()?.use { it.readText() }.orEmpty())
+        } catch (error: IOException) { failure = error
+        } finally { connection?.disconnect() }
+    }
+    throw failure ?: IOException("服务网络暂不可用")
+}

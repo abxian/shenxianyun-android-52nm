@@ -53,6 +53,7 @@ class ConfigurationModule(service: Service) : Module<ConfigurationModule.LoadExc
                 val active = ImportedDao().queryByUUID(current)
                     ?: throw NullPointerException("No profile selected")
 
+                com.github.kr328.clash.service.traffic.ServiceTrafficAccounting.sample(service)
                 Clash.load(service.importedDir.resolve(active.uuid.toString())).await()
 
                 val remove = SelectionDao().querySelections(active.uuid)
@@ -61,6 +62,7 @@ class ConfigurationModule(service: Service) : Module<ConfigurationModule.LoadExc
 
                 SelectionDao().removeSelections(active.uuid, remove)
 
+                com.github.kr328.clash.service.traffic.ServiceTrafficAccounting.profileLoaded(service,current.toString())
                 loaded = current
                 StatusProvider.currentProfile = active.name
 

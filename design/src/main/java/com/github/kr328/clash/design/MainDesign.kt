@@ -38,9 +38,27 @@ class MainDesign(context: Context) : Design<MainDesign.Request>(context) {
     private val binding = DesignMainBinding
         .inflate(context.layoutInflater, context.root, false)
     private var currentClashRunning = false
+    private var starting = false
 
     override val root: View
         get() = binding.root
+
+    fun enteredAccessCode(): String = binding.accessCodeInput.text.toString().trim()
+
+    suspend fun setSubscriptionStatus(text: String, updating: Boolean) = withContext(Dispatchers.Main) {
+        binding.subscriptionStatus = text
+        binding.subscriptionUpdating = updating
+    }
+
+    suspend fun setSubscriptionUpdating(updating: Boolean) = withContext(Dispatchers.Main) {
+        binding.subscriptionUpdating = updating
+    }
+
+    suspend fun setStarting(value: Boolean) = withContext(Dispatchers.Main) {
+        starting = value
+        binding.powerButton.isEnabled = !value
+        binding.accessCodeInput.isEnabled = !value
+    }
 
     suspend fun setProfileName(name: String?) {
         withContext(Dispatchers.Main) {
@@ -58,6 +76,10 @@ class MainDesign(context: Context) : Design<MainDesign.Request>(context) {
         withContext(Dispatchers.Main) {
             binding.activationExpiresAt = expiresAt
         }
+    }
+
+    suspend fun setRenewalNeeded(value: Boolean) = withContext(Dispatchers.Main) {
+        binding.renewalNeeded = value
     }
 
     suspend fun setClashRunning(running: Boolean) {
@@ -241,6 +263,12 @@ class MainDesign(context: Context) : Design<MainDesign.Request>(context) {
     }
 
     init {
+        binding.accessCodeInput.setOnEditorActionListener { _, action, _ ->
+            if (action == android.view.inputmethod.EditorInfo.IME_ACTION_GO) {
+                request(Request.ToggleStatus)
+                true
+            } else false
+        }
         binding.self = this
 
         binding.colorClashStarted = context.resolveThemedColor(com.google.android.material.R.attr.colorPrimary)
@@ -248,6 +276,8 @@ class MainDesign(context: Context) : Design<MainDesign.Request>(context) {
     }
 
     fun request(request: Request) {
+        if (starting && request != Request.UpdateSubscription) return
+        if (!currentClashRunning && request !in setOf(Request.ToggleStatus, Request.ImportByCode, Request.UpdateSubscription)) return
         if (request == Request.ToggleStatus && !currentClashRunning) {
             playStartEffect()
         }

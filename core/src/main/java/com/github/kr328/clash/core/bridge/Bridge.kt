@@ -11,6 +11,7 @@ import java.io.File
 @Keep
 object Bridge {
     external fun nativeReset()
+    external fun nativeStopAccountingTraffic()
     external fun nativeForceGc()
     external fun nativeSuspend(suspend: Boolean)
     external fun nativeQueryTunnelState(): String

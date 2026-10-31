@@ -15,4 +15,5 @@
     <include
         domain="file"
         path="clash/override.json" />
+    <exclude domain="sharedpref" path="service_traffic_crypto_v1.xml" />
 </full-backup-content>

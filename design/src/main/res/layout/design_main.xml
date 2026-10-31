@@ -27,6 +27,12 @@
         <variable
             name="activationCode"
             type="String" />
+        <variable name="subscriptionStatus" type="String" />
+        <variable name="subscriptionUpdating" type="boolean" />
+        <variable name="renewalNeeded" type="boolean" />
+        <variable
+            name="activationExpiresAt"
+            type="String" />
         <variable
             name="activationExpiresAt"
             type="String" />
@@ -109,7 +115,39 @@
                     android:text="@{lineStatus}"
                     android:textAppearance="@style/TextAppearance.MaterialComponents.Caption"
                     android:textColor="@color/sxy_purple"
-                    android:visibility="@{lineStatus == null ? View.GONE : View.VISIBLE}" />
+                    android:visibility="@{!clashRunning || lineStatus == null ? View.GONE : View.VISIBLE}" />
+
+                <EditText
+                    android:id="@+id/access_code_input"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginHorizontal="24dp"
+                    android:layout_marginVertical="16dp"
+                    android:hint="@string/import_code_hint"
+                    android:inputType="textVisiblePassword"
+                    android:maxLines="1"
+                    android:singleLine="true"
+                    android:imeOptions="actionGo"
+                    android:visibility="@{!clashRunning &amp;&amp; activationCode == null ? View.VISIBLE : View.GONE}" />
+
+                <com.github.kr328.clash.design.view.LargeActionLabel
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginVertical="16dp"
+                    android:background="@drawable/bg_sxy_action"
+                    android:onClick="@{() -> self.request(Request.ImportByCode)}"
+                    android:visibility="@{!clashRunning &amp;&amp; activationCode != null ? View.VISIBLE : View.GONE}"
+                    app:icon="@drawable/ic_baseline_cloud_download"
+                    app:text="@string/switch_import_code" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/renew_access_button"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginHorizontal="24dp"
+                    android:onClick="@{() -> self.request(Request.RenewCode)}"
+                    android:text="@string/renew_code"
+                    android:visibility="@{!clashRunning &amp;&amp; renewalNeeded ? View.VISIBLE : View.GONE}" />
 
                 <FrameLayout
                     android:layout_width="218dp"
@@ -152,10 +190,35 @@
                     android:textAppearance="@style/TextAppearance.MaterialComponents.Body2"
                     android:textColor="@color/sxy_text_muted" />
 
+                <ProgressBar
+                    style="?android:attr/progressBarStyleHorizontal"
+                    android:layout_width="160dp"
+                    android:layout_height="4dp"
+                    android:layout_marginTop="10dp"
+                    android:indeterminate="true"
+                    android:visibility="@{subscriptionUpdating ? View.VISIBLE : View.GONE}" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:text="@{subscriptionStatus}"
+                    android:textColor="@color/sxy_text_muted"
+                    android:textAppearance="@style/TextAppearance.MaterialComponents.Body2" />
+
+                <com.google.android.material.button.MaterialButton
+                    style="@style/Widget.MaterialComponents.Button.TextButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:onClick="@{() -> self.request(Request.UpdateSubscription)}"
+                    android:text="@string/update_subscription"
+                    android:visibility="@{!clashRunning &amp;&amp; activationCode != null ? View.VISIBLE : View.GONE}" />
+
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="18dp"
+                    android:visibility="@{clashRunning ? View.VISIBLE : View.GONE}"
                     android:gravity="center"
                     android:orientation="horizontal">
 
@@ -183,16 +246,17 @@
                     android:layout_height="wrap_content"
                     android:layout_marginTop="8dp"
                     android:background="@drawable/bg_sxy_chip"
-                    android:text="@{@string/format_activation_expiry(activationExpiresAt)}"
+                    android:text="@{activationExpiresAt != null ? @string/format_activation_expiry(activationExpiresAt) : @string/activation_expiry_pending}"
                     android:textAppearance="@style/TextAppearance.MaterialComponents.Caption"
                     android:textColor="@color/sxy_text_soft"
-                    android:visibility="@{activationExpiresAt == null ? View.GONE : View.VISIBLE}" />
+                    android:visibility="@{activationCode == null ? View.GONE : View.VISIBLE}" />
 
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="24dp"
                     android:background="@drawable/bg_sxy_panel"
+                    android:visibility="@{clashRunning ? View.VISIBLE : View.GONE}"
                     android:elevation="2dp"
                     android:orientation="vertical"
                     android:padding="16dp">
@@ -257,6 +321,7 @@
                         android:layout_marginTop="10dp"
                         android:background="@drawable/bg_sxy_action"
                         android:onClick="@{() -> self.request(Request.UpdateSubscription)}"
+                        android:visibility="@{activationCode != null ? View.VISIBLE : View.GONE}"
                         app:icon="@drawable/ic_baseline_cloud_download"
                         app:subtext="@string/update_subscription_summary"
                         app:text="@string/update_subscription" />

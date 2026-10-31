@@ -31,6 +31,7 @@ import com.github.kr328.clash.util.withClash
 import com.github.kr328.clash.util.withProfile
 import com.github.kr328.clash.core.bridge.*
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -41,6 +42,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.net.HttpURLConnection
@@ -51,25 +53,35 @@ import java.util.Date
 import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import com.github.kr328.clash.design.R
 
 class MainActivity : BaseActivity<MainDesign>() {
     private var selectedMode = TunnelState.Mode.Rule
     private val subscriptionRefreshMutex = Mutex()
+    private val accessStateMutex = Mutex()
+    private var subscriptionCheckNotBefore = 0L
+    private var powerOperationInFlight = false
+    private var hadRunningTunnel = false
+    private var subscriptionRefreshJob: Deferred<Boolean>? = null
+    private var subscriptionRefreshCode = ""
 
-    private enum class TrafficReportResult {
-        Success,
-        CounterReset,
-        // 服务端有两条 403 traffic_limit 路径，对客户端状态机的含义完全相反：
-        //   LimitedAfterAccept —— 本次上报已入账（traffic_counters 的 last_sequence 已推进），之后才判定越额。
-        //                          客户端必须像 Success 一样推进 sequence 和基线，否则下次会复用同一
-        //                          sequence，被服务端判为 duplicate 丢弃，额度恢复后的第一段流量就没了。
-        //   LimitedBeforeAccept —— 请求前就已越额，服务端直接拒绝，没有任何写入。此时不能推进 sequence。
-        // 区分依据：只有落账那条路径的响应体里带 accepted_upload / accepted_download 字段。
-        LimitedAfterAccept,
-        LimitedBeforeAccept,
-        Failure,
+    private data class TrafficTotals(val upload: Long, val download: Long) {
+        operator fun minus(other: TrafficTotals) = TrafficTotals(
+            (upload - other.upload).coerceAtLeast(0L),
+            (download - other.download).coerceAtLeast(0L),
+        )
+
+        operator fun plus(other: TrafficTotals) = TrafficTotals(
+            upload + other.upload,
+            download + other.download,
+        )
+
+        fun total() = upload + download
+
+        fun regressedFrom(previous: TrafficTotals) =
+            upload < previous.upload || download < previous.download
     }
 
     private data class TrafficTotals(val upload: Long, val download: Long) {
@@ -104,33 +116,26 @@ class MainActivity : BaseActivity<MainDesign>() {
         const val KEY_EXPIRES_AT = "expires_at"
         const val KEY_PROFILE_UUID = "profile_uuid"
         const val KEY_UPDATE_VERSION = "update_version"
+        const val KEY_SUBSCRIPTION_REVISION = "subscription_revision"
+        const val KEY_ACCESS_RESTRICTION = "access_restriction"
         const val KEY_CLIENT_ID = "client_id"
         const val KEY_PENDING_PRESENCE = "pending_presence"
-        const val KEY_TRAFFIC_COUNTER = "managed_traffic_counter_v2"
         const val KEY_EXPIRED_PROFILE_UUID = "expired_profile_uuid"
-        // 订阅更新轮询：仅在已连接时运行，基础 10 分钟，失败指数退避到最多 1 小时。
-        const val UPDATE_CHECK_INTERVAL_MILLIS = 600_000L
-        const val UPDATE_CHECK_MAX_INTERVAL_MILLIS = 3_600_000L
+        // 前台或VPN运行均检查：基础30秒，失败指数退避，后台返回立即唤醒。
+        const val UPDATE_CHECK_INTERVAL_MILLIS = 30_000L
+        const val UPDATE_CHECK_MAX_INTERVAL_MILLIS = 300_000L
         const val HEARTBEAT_INTERVAL_MILLIS = 120_000L
         const val HEARTBEAT_JITTER_MILLIS = 20_000L
-        const val EXPIRY_SYNC_INTERVAL_MILLIS = 60_000L
-        const val TRAFFIC_REPORT_INTERVAL_MILLIS = 300_000L
-        const val TRAFFIC_REPORT_JITTER_MILLIS = 60_000L
-        const val TRAFFIC_REPORT_MAX_BACKOFF_MILLIS = 1_800_000L
-        const val MAX_TRAFFIC_REPORT_DELTA_BYTES = 5L * 1024 * 1024 * 1024
         const val EXPIRED_NODE_NAME = "提取码到期，请续费使用"
         const val EXPIRED_PROFILE_NAME = "提取码已到期"
 
-        // 0=尚未尝试，1=正在刷新，2=本进程已经尝试。Activity 因配置变化重建时不重复下载。
+        // 2 means a download succeeded; foreground opens still force a fresh download.
         val startupSubscriptionRefreshState = AtomicInteger(0)
+        val openingRefreshRequested = AtomicBoolean(false)
     }
 
     private fun nextHeartbeatDelayMillis(): Long =
         HEARTBEAT_INTERVAL_MILLIS + (Math.random() * HEARTBEAT_JITTER_MILLIS).toLong()
-
-    // 五分钟基础间隔叠加随机抖动，避免大量客户端在同一秒集中上报。
-    private fun nextTrafficReportDelayMillis(): Long =
-        TRAFFIC_REPORT_INTERVAL_MILLIS + (Math.random() * TRAFFIC_REPORT_JITTER_MILLIS).toLong()
 
     private fun savePendingPresence(code: String, status: String): String {
         val id = UUID.randomUUID().toString()
@@ -150,74 +155,30 @@ class MainActivity : BaseActivity<MainDesign>() {
     private data class SubscriptionUpdateState(
         val updateVersion: Long?,
         val expiresAt: String?,
+        val revision: String?,
     )
 
     override suspend fun main() {
         val design = MainDesign(this)
         stableClientId()
 
-        var lastExpirySyncAt = System.currentTimeMillis()
-        var expirySyncInFlight = true
-
-        // 端点发现：后台拉取 endpoints.json 并探测可用 API 基址（失败静默，用缓存/内置默认）。
-        // 必须放独立协程，绝不能阻塞下面的 select 事件循环。
-        launch {
-            try {
-                try {
-                    EndpointResolver.initialize()
-                } catch (error: CancellationException) {
-                    throw error
-                } catch (_: Exception) {
-                }
-                try {
-                    refreshLineStatus(design)
-                } catch (error: CancellationException) {
-                    throw error
-                } catch (_: Exception) {
-                }
-                design.refreshSubscriptionOnProcessStart()
-            } finally {
-                lastExpirySyncAt = System.currentTimeMillis()
-                expirySyncInFlight = false
-            }
-        }
-
         setContentDesign(design)
-
-        runCatching { ensureDefaultMetaFeatures() }
-            .onFailure { design.showExceptionToast(it.asException()) }
-
-        runCatching { design.resetModeForLaunch() }
-            .onFailure { design.showExceptionToast(it.asException()) }
-        runCatching { design.fetch() }
-            .onFailure { design.showExceptionToast(it.asException()) }
-        runCatching { design.checkAppUpdate() }
+        launch { configureServiceTrafficReporting() }
+        // Enter the request loop immediately; service binding and discovery must
+        // never hold every click behind their network/startup waits.
+        launch {
+            try { ensureDefaultMetaFeatures() } catch (e: CancellationException) { throw e } catch (_: Exception) {}
+            try { design.resetModeForLaunch() } catch (e: CancellationException) { throw e } catch (_: Exception) {}
+            design.safeFetch()
+        }
+        launch { runCatching { design.checkAppUpdate() } }
+        launch { runCatching { EndpointResolver.initialize(); refreshLineStatus(design) } }
+        if (savedActivationCode().isNotBlank() && openingRefreshRequested.compareAndSet(false, true))
+            design.requestSubscriptionRefresh(force = true)
 
         val ticker = ticker(TimeUnit.SECONDS.toMillis(1))
         var lastSubscriptionUpdateCheck = 0L
         var nextHeartbeatAt = 0L
-        var nextTrafficReportAt = 0L
-        var trafficReportFailures = 0
-        val restoredTraffic = loadTrafficCounterState(savedActivationCode())
-        var lastReportedTrafficTotal = restoredTraffic?.lastAcknowledged
-        var trafficCounterId = restoredTraffic?.counterId ?: UUID.randomUUID().toString()
-        var trafficCounterSequence = restoredTraffic?.sequence ?: 0L
-        var trafficCounterBase = restoredTraffic?.base ?: TrafficTotals(0L, 0L)
-        var pendingTrafficTotal = restoredTraffic?.pending
-        var trafficReportInFlight = false
-
-        fun persistTrafficCounter() {
-            saveTrafficCounterState(
-                TrafficCounterState(
-                    code = savedActivationCode(),
-                    counterId = trafficCounterId,
-                    sequence = trafficCounterSequence,
-                    base = trafficCounterBase,
-                    lastAcknowledged = lastReportedTrafficTotal,
-                    pending = pendingTrafficTotal,
-                )
-            )
-        }
         // 订阅更新轮询：在途互斥 + 失败指数退避（叠加抖动），避免 web 掉线恢复后惊群打满服务器。
         var subscriptionUpdateInFlight = false
         var subscriptionFailures = 0
@@ -260,31 +221,28 @@ class MainActivity : BaseActivity<MainDesign>() {
                     when (it) {
                         Event.ActivityStart -> {
                             launch { design.safeFetch() }
-                            launchExpirySync()
+                            // Returning from payment must not wait for the periodic timer.
+                            lastSubscriptionUpdateCheck = 0L
                         }
                         Event.ServiceRecreated,
                         Event.ProfileLoaded, Event.ProfileChanged -> launch { design.safeFetch() }
                         Event.ClashStart -> {
-                            trafficCounterId = UUID.randomUUID().toString()
-                            trafficCounterSequence = 0L
-                            trafficCounterBase = TrafficTotals(0L, 0L)
-                            pendingTrafficTotal = null
-                            persistTrafficCounter()
+                            hadRunningTunnel = true
                             nextHeartbeatAt = System.currentTimeMillis() + nextHeartbeatDelayMillis()
-                            nextTrafficReportAt = System.currentTimeMillis() +
-                                5_000L + (Math.random() * 25_000L).toLong()
-                            trafficReportFailures = 0
                             launch { design.safeFetch() }
                             launch { sendClientHeartbeat("online") }
                         }
                         Event.ClashStop -> {
                             launch { design.safeFetch() }
                             nextHeartbeatAt = 0L
-                            nextTrafficReportAt = 0L
-                            trafficReportFailures = 0
-                            lastReportedTrafficTotal = null
-                            pendingTrafficTotal = null
                             launch { sendClientHeartbeat("offline") }
+                            if (hadRunningTunnel) {
+                                hadRunningTunnel = false
+                                launch {
+                                    val code = savedActivationCode()
+                                    if (code.isNotBlank()) design.importSubscriptionCode(code, silent = true, notifySuccess = false)
+                                }
+                            }
                         }
                         else -> Unit
                     }
@@ -292,12 +250,32 @@ class MainActivity : BaseActivity<MainDesign>() {
                 design.requests.onReceive {
                     when (it) {
                         MainDesign.Request.ToggleStatus -> {
-                            runCatching {
-                                if (clashRunning)
-                                    stopClashService()
-                                else
-                                    design.startClash()
-                            }.onFailure { design.showExceptionToast(it.asException()) }
+                            if (!powerOperationInFlight) {
+                                powerOperationInFlight = true
+                                launch {
+                                    design.setStarting(true)
+                                    try {
+                                        if (clashRunning) stopClashService()
+                                        else {
+                                            val entered = design.enteredAccessCode()
+                                            if (savedActivationCode().isBlank()) {
+                                                if (entered.isBlank()) {
+                                                    design.showToast(R.string.import_code_empty, ToastDuration.Long)
+                                                } else if (design.importSubscriptionCode(entered)) {
+                                                    design.startClash()
+                                                }
+                                            } else design.startClash()
+                                        }
+                                    } catch (e: CancellationException) {
+                                        throw e
+                                    } catch (e: Exception) {
+                                        design.showExceptionToast(e)
+                                    } finally {
+                                        powerOperationInFlight = false
+                                        design.setStarting(false)
+                                    }
+                                }
+                            }
                         }
                         MainDesign.Request.ImportByCode ->
                             design.showCodeImportDialog()
@@ -306,11 +284,7 @@ class MainActivity : BaseActivity<MainDesign>() {
                             if (code.isBlank()) {
                                 design.showCodeImportDialog()
                             } else {
-                                // 网络更新放进独立协程，避免阻塞事件循环导致点击失效。
-                                launch {
-                                    runCatching { design.importSubscriptionCode(code, silent = true) }
-                                        .onFailure { design.showExceptionToast(it.asException()) }
-                                }
+                                design.requestSubscriptionRefresh(force = true)
                             }
                         }
                         MainDesign.Request.RenewCode ->
@@ -348,117 +322,29 @@ class MainActivity : BaseActivity<MainDesign>() {
                 ticker.onReceive {
                     val now = System.currentTimeMillis()
                     if (clashRunning) {
-                        val trafficTotal = runCatching { design.fetchTraffic() }
-                            .getOrElse { lastReportedTrafficTotal ?: TrafficTotals(0L, 0L) }
-                        if (lastReportedTrafficTotal == null) {
-                            lastReportedTrafficTotal = trafficTotal
-                            trafficCounterBase = trafficTotal
-                        }
+                        runCatching { design.fetchTraffic() }
                         if (now >= nextHeartbeatAt) {
                             nextHeartbeatAt = now + nextHeartbeatDelayMillis()
                             launch { sendClientHeartbeat("online") }
                         }
-                        if (now >= nextTrafficReportAt) {
-                            var previous = lastReportedTrafficTotal ?: trafficTotal
-                            if (trafficTotal.regressedFrom(previous)) {
-                                trafficCounterId = UUID.randomUUID().toString()
-                                trafficCounterSequence = 0L
-                                trafficCounterBase = trafficTotal
-                                lastReportedTrafficTotal = trafficTotal
-                                pendingTrafficTotal = null
-                                persistTrafficCounter()
-                                previous = trafficTotal
-                            }
-                            val delta = trafficTotal - previous
-                            val cumulative = trafficTotal - trafficCounterBase
-                            nextTrafficReportAt = now + nextTrafficReportDelayMillis()
-                            if (!trafficReportInFlight && delta.total() > 0L && delta.total() <= MAX_TRAFFIC_REPORT_DELTA_BYTES) {
-                                val reportTotal = pendingTrafficTotal ?: cumulative
-                                val reportDelta = reportTotal - (previous - trafficCounterBase)
-                                val reportSequence = trafficCounterSequence + 1L
-                                pendingTrafficTotal = reportTotal
-                                persistTrafficCounter()
-                                trafficReportInFlight = true
-                                launch {
-                                    try {
-                                        when (
-                                            sendClientTraffic(
-                                                reportDelta,
-                                                trafficCounterId,
-                                                reportSequence,
-                                                reportTotal,
-                                            )
-                                        ) {
-                                            TrafficReportResult.Success -> {
-                                                trafficReportFailures = 0
-                                                nextTrafficReportAt = System.currentTimeMillis() +
-                                                    nextTrafficReportDelayMillis()
-                                                trafficCounterSequence = reportSequence
-                                                pendingTrafficTotal = null
-                                                lastReportedTrafficTotal = trafficCounterBase + reportTotal
-                                                persistTrafficCounter()
-                                            }
-                                            TrafficReportResult.CounterReset -> {
-                                                trafficReportFailures = 0
-                                                nextTrafficReportAt = System.currentTimeMillis() +
-                                                    nextTrafficReportDelayMillis()
-                                                trafficCounterId = UUID.randomUUID().toString()
-                                                trafficCounterSequence = 0L
-                                                trafficCounterBase = trafficTotal
-                                                pendingTrafficTotal = null
-                                                lastReportedTrafficTotal = trafficTotal
-                                                persistTrafficCounter()
-                                            }
-                                            TrafficReportResult.LimitedAfterAccept -> {
-                                                // 服务端已收下这一笔，状态推进方式与 Success 完全一致；
-                                                // 只是额外触发了限速。漏掉这一步会导致额度恢复后首段流量被
-                                                // 当作 duplicate 丢弃。
-                                                trafficReportFailures = 0
-                                                nextTrafficReportAt = System.currentTimeMillis() +
-                                                    nextTrafficReportDelayMillis()
-                                                trafficCounterSequence = reportSequence
-                                                pendingTrafficTotal = null
-                                                lastReportedTrafficTotal = trafficCounterBase + reportTotal
-                                                persistTrafficCounter()
-                                            }
-                                            TrafficReportResult.LimitedBeforeAccept -> {
-                                                // 服务端没有写入，保持 sequence 与基线不动，等额度恢复后重报。
-                                                trafficReportFailures = 0
-                                                pendingTrafficTotal = null
-                                                persistTrafficCounter()
-                                            }
-                                            TrafficReportResult.Failure -> {
-                                                // 指数退避到最长三十分钟，避免网络或服务端恢复时形成请求惊群。
-                                                trafficReportFailures += 1
-                                                val multiplier = 1L shl trafficReportFailures.coerceAtMost(3)
-                                                val backoff = (TRAFFIC_REPORT_INTERVAL_MILLIS * multiplier)
-                                                    .coerceAtMost(TRAFFIC_REPORT_MAX_BACKOFF_MILLIS)
-                                                nextTrafficReportAt = System.currentTimeMillis() +
-                                                    (backoff * (0.75 + Math.random() * 0.5)).toLong()
-                                            }
-                                        }
-                                    } finally {
-                                        trafficReportInFlight = false
-                                    }
-                                }
-                            } else if (delta.total() > MAX_TRAFFIC_REPORT_DELTA_BYTES) {
-                                lastReportedTrafficTotal = trafficTotal
-                            }
-                        }
+                        // Accounting belongs to the foreground VPN service, not this Activity.
                     } else {
-                        // 核心未运行但首页在前台时，轻量同步续费后的到期时间；不下载订阅、
-                        // 不发送在线心跳，也不占用在线设备名额。
-                        launchExpirySync()
+                        // Subscription checks below continue with the VPN stopped.
                     }
-                    // 仅在已连接、无在途请求、且到达（含退避后的）间隔时才发起更新检查。
-                    if (clashRunning &&
+                    // VPN停止也继续检查；不修改用户连接意图。
+                    if ((clashRunning || activityStarted) &&
+                        !powerOperationInFlight && subscriptionRefreshJob?.isActive != true && !subscriptionRefreshMutex.isLocked &&
                         !subscriptionUpdateInFlight &&
                         now - lastSubscriptionUpdateCheck >= subscriptionCheckDelay
                     ) {
                         lastSubscriptionUpdateCheck = now
                         subscriptionUpdateInFlight = true
                         launch {
-                            val ok = runCatching { design.checkSubscriptionUpdate() }.isSuccess
+                            val ok = try {
+                                design.checkSubscriptionUpdate()
+                                true
+                            } catch (error: CancellationException) { throw error
+                            } catch (_: Exception) { false }
                             subscriptionFailures = if (ok) 0 else minOf(subscriptionFailures + 1, 4)
                             // 失败可能是当前 API 线路失联：后台切到下一条可用线路（api_bases 顺延）。
                             if (!ok) runCatching { EndpointResolver.rotate() }
@@ -467,7 +353,7 @@ class MainActivity : BaseActivity<MainDesign>() {
                                 UPDATE_CHECK_MAX_INTERVAL_MILLIS,
                             )
                             // 50%~100% 抖动，打散各客户端的请求时间。
-                            subscriptionCheckDelay = (backoff * (0.5 + Math.random() * 0.5)).toLong()
+                            subscriptionCheckDelay = (backoff * (0.8 + Math.random() * 0.4)).toLong()
                             subscriptionUpdateInFlight = false
                         }
                     }
@@ -577,10 +463,14 @@ class MainActivity : BaseActivity<MainDesign>() {
                     (json?.optString("code") == "device_limit" ||
                         json?.optString("code") == "traffic_limit")
                 ) {
-                    enforceClientLimit(
+                    if (savedActivationCode() == code && loadManagedCredentials()?.deviceToken == credentials.deviceToken) {
+                        activationStore().edit().putString(KEY_ACCESS_RESTRICTION, json?.optString("code", "unavailable")).apply()
+                        design?.setRenewalNeeded(json?.optString("code") == "traffic_limit")
+                        enforceClientLimit(
                         json?.optString("message", "套餐设备或流量额度已达到上限")
                             ?: "套餐设备或流量额度已达到上限",
-                    )
+                        )
+                    }
                 } else if (
                     status != "offline" &&
                     statusCode in 200..299 &&
@@ -639,108 +529,16 @@ class MainActivity : BaseActivity<MainDesign>() {
         }
     }
 
-    private suspend fun sendClientTraffic(
-        deltaBytes: TrafficTotals,
-        counterId: String,
-        sequence: Long,
-        cumulativeBytes: TrafficTotals,
-    ): TrafficReportResult = withContext(Dispatchers.IO) {
-        val code = savedActivationCode()
-        if (code.isBlank() || deltaBytes.total() <= 0L) {
-            return@withContext TrafficReportResult.Failure
-        }
-        val appVersion = queryAppVersionName().asHeaderValue()
-        val credentials = loadManagedCredentials()
-            ?.takeIf { it.accessCode == code }
-        if (credentials != null) {
-            val body = JSONObject().apply {
-                put("counter_id", counterId)
-                put("sequence", sequence)
-                put("upload_total", cumulativeBytes.upload)
-                put("download_total", cumulativeBytes.download)
-                put("platform", "安卓手机")
-                put("app_name", "${EndpointResolver.clientName()}安卓端")
-                put("app_version", appVersion)
-                put("device_name", "${Build.BRAND} ${Build.MODEL}")
-            }.toString().toByteArray(Charsets.UTF_8)
-            val connection = (URL("${credentials.apiBase}/api/v2/client/traffic").openConnection() as HttpURLConnection).apply {
-                connectTimeout = 5000
-                readTimeout = 5000
-                requestMethod = "POST"
-                doOutput = true
-                setRequestProperty("Authorization", "Bearer ${credentials.deviceToken}")
-                setRequestProperty("Content-Type", "application/json")
-                setRequestProperty("User-Agent", "Shenxianyun-Android/$appVersion")
-                setRequestProperty("X-Client-Id", stableClientId())
-            }
-            try {
-                connection.outputStream.use { it.write(body) }
-                val statusCode = connection.responseCode
-                val stream = if (statusCode in 200..299) {
-                    connection.inputStream
-                } else {
-                    connection.errorStream
-                }
-                val json = runCatching {
-                    JSONObject(stream?.bufferedReader()?.use { it.readText() }.orEmpty())
-                }.getOrNull()
-                when {
-                    statusCode in 200..299 && json?.optBoolean("ok", false) == true ->
-                        TrafficReportResult.Success
-                    statusCode == 409 && json?.optString("code") == "counter_reset" ->
-                        TrafficReportResult.CounterReset
-                    statusCode == 403 && json?.optString("code") == "traffic_limit" -> {
-                        enforceClientLimit(
-                            json?.optString("message", "流量额度已用尽，代理已停止")
-                                ?: "流量额度已用尽，代理已停止",
-                        )
-                        // 带 accepted_* 字段 = 服务端已把本次增量落账后才返回 403
-                        if (json != null && json.has("accepted_upload") && json.has("accepted_download")) {
-                            TrafficReportResult.LimitedAfterAccept
-                        } else {
-                            TrafficReportResult.LimitedBeforeAccept
-                        }
-                    }
-                    else -> TrafficReportResult.Failure
-                }
-            } catch (_: Exception) {
-                TrafficReportResult.Failure
-            } finally {
-                connection.disconnect()
-            }
-        } else {
-        val encoded = URLEncoder.encode(code, "UTF-8").replace("+", "%20")
-        val body = JSONObject().apply {
-            put("client_id", stableClientId())
-            put("platform", "安卓手机")
-            put("app_name", "${EndpointResolver.clientName()}安卓端")
-            put("app_version", appVersion)
-            put("device_name", "${Build.BRAND} ${Build.MODEL}")
-            put("upload_bytes", deltaBytes.upload)
-            put("download_bytes", deltaBytes.download)
-        }.toString().toByteArray(Charsets.UTF_8)
-        val connection = (URL("${EndpointResolver.apiBase()}/api/client/traffic/$encoded").openConnection() as HttpURLConnection).apply {
-            connectTimeout = 5000
-            readTimeout = 5000
-            requestMethod = "POST"
-            doOutput = true
-            setRequestProperty("Content-Type", "application/json")
-            setRequestProperty("User-Agent", "Shenxianyun-Android/$appVersion")
-            setRequestProperty("X-Client-Id", stableClientId())
-        }
-        try {
-            connection.outputStream.use { it.write(body) }
-            if (connection.responseCode in 200..299) {
-                TrafficReportResult.Success
-            } else {
-                TrafficReportResult.Failure
-            }
-        } catch (_: Exception) {
-            TrafficReportResult.Failure
-        } finally {
-            connection.disconnect()
-        }
-        }
+    private suspend fun configureServiceTrafficReporting() {
+        val code=savedActivationCode()
+        val credentials=loadManagedCredentials()?.takeIf {it.accessCode==code} ?: return
+        val profile=activationStore().getString(KEY_PROFILE_UUID,null) ?: return
+        val config=JSONObject().put("code",code).put("client_id",stableClientId())
+            .put("api_base",credentials.apiBase).put("device_token",credentials.deviceToken)
+            .put("profile",profile).put("app_name", "${EndpointResolver.clientName()}安卓端")
+            .put("version",queryAppVersionName().asHeaderValue())
+            .put("device","${Build.BRAND} ${Build.MODEL}")
+        com.github.kr328.clash.service.traffic.ServiceTrafficAccounting.configure(this,config.toString())
     }
 
     private fun loadTrafficCounterState(code: String): TrafficCounterState? {
@@ -804,15 +602,19 @@ class MainActivity : BaseActivity<MainDesign>() {
     // fetch 的安全包装：吞掉异常并提示，供事件循环用 launch 调用，确保单次刷新失败
     // 不会让协程崩溃或阻塞后续事件处理。
     private suspend fun MainDesign.safeFetch() {
-        runCatching { fetch() }.onFailure { showExceptionToast(it.asException()) }
+        try { fetch() } catch (e: CancellationException) { throw e }
+        catch (_: Exception) { /* Local service refresh does not open technical error layers. */ }
     }
 
     private suspend fun MainDesign.fetch() {
+        if (clashRunning) hadRunningTunnel = true
         setClashRunning(clashRunning)
         setActivationCode(savedActivationCode().ifBlank { null })
-        setActivationExpiresAt(
-            normalizedExpiresAt(activationStore().getString(KEY_EXPIRES_AT, null)),
-        )
+        setActivationExpiresAt(normalizedExpiresAt(activationStore().getString(KEY_EXPIRES_AT, null)))
+        setRenewalNeeded(savedActivationCode().isNotBlank() && (
+            activationStore().getString(KEY_ACCESS_RESTRICTION, "") in listOf("expired", "traffic_limit") ||
+                isExpired(activationStore().getString(KEY_EXPIRES_AT, "").orEmpty())
+        ))
 
         val state = withClash {
             queryTunnelState()
@@ -923,8 +725,8 @@ class MainActivity : BaseActivity<MainDesign>() {
 
     private fun MainDesign.showExpiredDialog() {
         AlertDialog.Builder(this@MainActivity)
-            .setTitle(R.string.import_code_expired_title)
-            .setMessage(R.string.import_code_expired_message)
+            .setTitle(if (activationStore().getString(KEY_ACCESS_RESTRICTION, "") == "traffic_limit") "流量额度已用尽" else getString(R.string.import_code_expired_title))
+            .setMessage("网站续费、管理员加时或额度恢复后，将自动更新当前订阅，无需重新导入。")
             .setPositiveButton(R.string.renew_code) { _, _ -> openCodeStorePage() }
             .setNeutralButton(R.string.import_by_code) { _, _ ->
                 showCodeImportDialog()
@@ -933,26 +735,46 @@ class MainActivity : BaseActivity<MainDesign>() {
             .show()
     }
 
-    private suspend fun MainDesign.refreshSubscriptionOnProcessStart() {
+    private fun MainDesign.requestSubscriptionRefresh(
+        force: Boolean,
+    ): Deferred<Boolean>? {
         val code = savedActivationCode()
-        if (code.isBlank() || !startupSubscriptionRefreshState.compareAndSet(0, 1)) {
-            return
+        if (code.isBlank()) return null
+        val existing = subscriptionRefreshJob
+        if (shouldReuseSubscriptionRefresh(subscriptionRefreshCode, code, existing?.isActive == true)) {
+            return existing
         }
-
-        var completed = false
-        try {
-            importSubscriptionCode(code, silent = true, notifySuccess = false)
-            completed = true
-        } finally {
-            startupSubscriptionRefreshState.set(if (completed) 2 else 0)
-        }
+        subscriptionRefreshCode = code
+        return async {
+            setSubscriptionStatus("正在更新订阅，获取最新节点...", true)
+            try {
+                checkSubscriptionUpdate(forceDownload = force)
+                if (savedActivationCode() != code) return@async false
+                setSubscriptionStatus("节点已更新", false)
+                true
+            } catch (error: CancellationException) {
+                if (error !is kotlinx.coroutines.TimeoutCancellationException) throw error
+                if (savedActivationCode() == code)
+                    setSubscriptionStatus("暂未更新，已保留原节点，请稍后重试", false)
+                false
+            } catch (_: Exception) {
+                if (savedActivationCode() == code)
+                    setSubscriptionStatus("暂未更新，已保留原节点，请稍后重试", false)
+                false
+            } finally {
+                if (subscriptionRefreshCode == code) setSubscriptionUpdating(false)
+            }
+        }.also { subscriptionRefreshJob = it }
     }
 
     private suspend fun MainDesign.importSubscriptionCode(
         code: String,
         silent: Boolean = false,
         notifySuccess: Boolean = true,
+        knownState: SubscriptionUpdateState? = null,
     ): Boolean = subscriptionRefreshMutex.withLock {
+        // A queued refresh must not restore the code that the user has just replaced.
+        if (silent && savedActivationCode() != code) return@withLock false
         try {
             if (!silent) {
                 showToast(R.string.import_code_fetching, ToastDuration.Long)
@@ -1010,29 +832,12 @@ class MainActivity : BaseActivity<MainDesign>() {
                 // 自动刷新不能只相信客户端内缓存的旧日期。续费后服务端可能已经延长
                 // 设备令牌，继续尝试拉取；若确实过期，服务端会拒绝且旧配置保持不变。
             }
-            val content = try {
-                fetchManagedSubscription(credentials)
-            } catch (error: CancellationException) {
-                throw error
-            } catch (error: Exception) {
-                if (!silent || existing == null) throw error
-                val apiBase = existing.apiBase.ifBlank { EndpointResolver.apiBase() }
-                val ticket = issueManagedImportTicket(code, apiBase)
-                credentials = exchangeManagedImportTicket(
-                    ticket,
-                    apiBase,
-                    stableClientId(),
-                ).copy(accessCode = code)
-                fetchManagedSubscription(credentials)
-            }
-            val updateState = try {
-                queryUpdateState(code)
-            } catch (error: CancellationException) {
-                throw error
-            } catch (_: Exception) {
-                null
-            }
-            val expiresAt = updateState?.expiresAt ?: credentials.expiresAt
+            // Snapshot the revision BEFORE downloading. A newer update arriving
+            // during download must remain detectable on the next poll.
+            val updateState = knownState ?: queryUpdateState(code)
+            val content = withTimeout(20_000) { fetchManagedSubscription(credentials) }
+            if (silent && savedActivationCode() != code) return@withLock false
+            val expiresAt = updateState.expiresAt.orEmpty()
             if (expiresAt != credentials.expiresAt) {
                 credentials = credentials.copy(expiresAt = expiresAt)
             }
@@ -1042,20 +847,23 @@ class MainActivity : BaseActivity<MainDesign>() {
                 activeUuidBefore == expiredUuidBefore
             val uuid = installManagedProfile(code, content, activate = shouldActivate)
             saveManagedCredentials(credentials)
-            val updateVersion = updateState?.updateVersion
+            val updateVersion = updateState.updateVersion
                 ?: activationStore().getLong(KEY_UPDATE_VERSION, 0L)
             val editor = activationStore().edit()
                 .putString(KEY_CODE, code)
                 .putString(KEY_EXPIRES_AT, expiresAt)
                 .putString(KEY_PROFILE_UUID, uuid.toString())
                 .putLong(KEY_UPDATE_VERSION, updateVersion)
+                .remove(KEY_ACCESS_RESTRICTION)
+            updateState.revision?.let { editor.putString(KEY_SUBSCRIPTION_REVISION, it) }
             if (activeUuidBefore == expiredUuidBefore && expiredUuidBefore != null) {
                 withProfile { runCatching { delete(expiredUuidBefore) } }
                 editor.remove(KEY_EXPIRED_PROFILE_UUID)
             }
             editor.apply()
+            configureServiceTrafficReporting()
             startupSubscriptionRefreshState.set(2)
-            fetch()
+            launch { safeFetch() }
             if (notifySuccess) {
                 showToast(
                     if (silent) R.string.subscription_updated else R.string.import_code_success,
@@ -1083,9 +891,16 @@ class MainActivity : BaseActivity<MainDesign>() {
             ?.let { runCatching { UUID.fromString(it) }.getOrNull() }
         val onCodeTrack = active != null &&
             (active.uuid == codeProfileUuid || active.uuid == expiredProfileUuid())
-        if (code.isNotBlank() && onCodeTrack && !isActivationStillValid(code)) {
-            activateExpiredProfile()
-            showExpiredDialog()
+        if (code.isNotBlank() && onCodeTrack) {
+            // Every Start requests current nodes. Share an in-flight same-code
+            // refresh, but a previously completed check never skips this update.
+            val refresh = requestSubscriptionRefresh(force = true)
+            if (refresh != null) refresh.await()
+            if (activationStore().getString(KEY_ACCESS_RESTRICTION, "").orEmpty().isNotBlank() ||
+                !isActivationStillValid(code) || onExpiredPlaceholder()) {
+                setSubscriptionStatus("请确认提取码有效并联网更新后重试", false)
+                return
+            }
             active = withProfile { queryActive() }
         }
 
@@ -1105,6 +920,7 @@ class MainActivity : BaseActivity<MainDesign>() {
             return
         }
 
+        configureServiceTrafficReporting()
         applySelectedModeBeforeStart()
         val vpnRequest = startClashService()
 
@@ -1133,7 +949,7 @@ class MainActivity : BaseActivity<MainDesign>() {
         value?.trim()?.takeIf { it.isNotBlank() && it != "null" }
 
     private suspend fun syncActivationExpiresAt(code: String, value: String?): Boolean {
-        val expiresAt = normalizedExpiresAt(value) ?: return false
+        val expiresAt = normalizedExpiresAt(value).orEmpty()
         if (savedActivationCode() != code) return false
 
         val store = activationStore()
@@ -1154,16 +970,6 @@ class MainActivity : BaseActivity<MainDesign>() {
         return storedChanged
     }
 
-    private suspend fun MainDesign.syncActivationState(
-        code: String,
-    ): SubscriptionUpdateState? {
-        if (savedActivationCode() != code) return null
-        val state = queryUpdateState(code) ?: return null
-        if (savedActivationCode() != code) return null
-        syncActivationExpiresAt(code, state.expiresAt)
-        return state
-    }
-
     private fun openCodeStorePage() {
         val code = savedActivationCode()
         val encoded = URLEncoder.encode(code, "UTF-8").replace("+", "%20")
@@ -1175,36 +981,20 @@ class MainActivity : BaseActivity<MainDesign>() {
         startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
     }
 
-    private suspend fun queryUpdateState(
-        code: String,
-    ): SubscriptionUpdateState? = withContext(Dispatchers.IO) {
-        val encoded = URLEncoder.encode(code, "UTF-8").replace("+", "%20")
-        val clientId = URLEncoder.encode(stableClientId(), "UTF-8")
-        val connection = (URL("${EndpointResolver.apiBase()}/api/update-state/$encoded?client_id=$clientId").openConnection() as HttpURLConnection).apply {
-            connectTimeout = 8000
-            readTimeout = 8000
-            requestMethod = "GET"
-            setRequestProperty("X-Client-Id", stableClientId())
+    private class AccessStateRejected(val reason: String, message: String) : IllegalStateException(message)
+
+    private suspend fun queryUpdateState(code: String): SubscriptionUpdateState = withTimeout(30_000L) {
+        val (status, json) = readManagedUpdateState(code, stableClientId())
+        if (status !in 200..299 || !json.optBoolean("ok", false)) {
+            if (status == 403 || status == 404) throw AccessStateRejected(
+                json.optString("code", "unavailable"), json.optString("message", "订阅暂不可用"))
+            throw IllegalStateException("订阅状态检查暂不可用")
         }
-
-        try {
-            if (connection.responseCode !in 200..299) {
-                return@withContext null
-            }
-
-            val body = connection.inputStream.bufferedReader().use { it.readText() }
-            val json = JSONObject(body)
-            if (!json.optBoolean("ok", false)) {
-                return@withContext null
-            }
-
-            SubscriptionUpdateState(
-                updateVersion = json.optLong("update_version", 0L).takeIf { it > 0L },
-                expiresAt = normalizedExpiresAt(json.optString("expires_at", "")),
-            )
-        } finally {
-            connection.disconnect()
-        }
+        SubscriptionUpdateState(
+            updateVersion = json.optLong("update_version", 0L).takeIf { it > 0L },
+            expiresAt = normalizedExpiresAt(json.optString("expires_at", "")),
+            revision = json.optString("subscription_revision", "").takeIf { it.isNotBlank() },
+        )
     }
 
     private suspend fun queryUpdateVersion(code: String): Long? =
@@ -1262,33 +1052,46 @@ class MainActivity : BaseActivity<MainDesign>() {
         }
     }
 
-    // 订阅更新轮询：仅在已连接时执行，空闲时不请求，降低服务器压力。
-    // 网络异常会向上抛出，交由调用方做指数退避。
-    private suspend fun MainDesign.checkSubscriptionUpdate() {
-        if (!clashRunning) {
-            return
-        }
-
+    // A lightweight authoritative status read is independent of VPN state.
+    private suspend fun MainDesign.checkSubscriptionUpdate(forceDownload: Boolean = false) {
+        accessStateMutex.withLock {
+        if (System.currentTimeMillis() < subscriptionCheckNotBefore) throw IllegalStateException("服务端要求稍后检查")
         val code = savedActivationCode()
-        if (code.isBlank()) {
-            return
+        if (code.isBlank()) return
+        val active = withProfile { queryActive() } ?: throw IllegalStateException("尚未选择提取码订阅")
+        if (active.uuid != managedProfileUuid() && active.uuid != expiredProfileUuid())
+            throw IllegalStateException("当前使用本地配置")
+        val store = activationStore()
+        val wasRestricted = store.getString(KEY_ACCESS_RESTRICTION, "").orEmpty().isNotBlank() || onExpiredPlaceholder()
+        val oldExpiry = store.getString(KEY_EXPIRES_AT, "").orEmpty()
+        val state = try { withTimeout(10_000) { queryUpdateState(code) } } catch (error: ManagedStateRetryAfter) {
+            subscriptionCheckNotBefore = System.currentTimeMillis() + error.delayMillis
+            throw error
+        } catch (error: AccessStateRejected) {
+            if (savedActivationCode() != code) return
+            store.edit().putString(KEY_ACCESS_RESTRICTION, error.reason).apply()
+            setRenewalNeeded(error.reason == "expired" || error.reason == "traffic_limit")
+            if (clashRunning) enforceClientLimit(error.message ?: "订阅暂不可用")
+            throw error
         }
-
-        // 处于到期占位配置时，低频探测提取码是否已续费，成功则自动恢复正式订阅。
-        if (onExpiredPlaceholder()) {
-            recoverFromExpired(code)
-            return
+        if (savedActivationCode() != code) return
+        val expiryChanged = normalizedExpiresAt(oldExpiry) != state.expiresAt
+        val needsRefresh = shouldRefreshAccessSubscription(
+            startup = forceDownload || startupSubscriptionRefreshState.get() != 2,
+            restricted = wasRestricted, expiryChanged = expiryChanged,
+            localVersion = store.getLong(KEY_UPDATE_VERSION, 0L), remoteVersion = state.updateVersion ?: 0L,
+            localRevision = store.getString(KEY_SUBSCRIPTION_REVISION, ""), remoteRevision = state.revision,
+        )
+        if (needsRefresh) {
+            if (!importSubscriptionCode(code, silent = true, notifySuccess = false, knownState = state)) {
+                throw IllegalStateException("恢复订阅暂未完成，将自动重试")
+            }
         }
-
-        val updateState = syncActivationState(code) ?: return
-        val remoteVersion = updateState.updateVersion ?: return
-
-        val localVersion = activationStore().getLong(KEY_UPDATE_VERSION, 0L)
-        if (localVersion > 0L && remoteVersion <= localVersion) {
-            return
+        if (savedActivationCode() != code) return
+        store.edit().remove(KEY_ACCESS_RESTRICTION).apply()
+        syncActivationExpiresAt(code, state.expiresAt)
+        setRenewalNeeded(false)
         }
-
-        importSubscriptionCode(code, silent = true)
     }
 
     // 生成只含单个本地不可上网节点的占位配置：除订阅/续费域名直连外，其余流量全部
@@ -1345,38 +1148,6 @@ class MainActivity : BaseActivity<MainDesign>() {
             queryByUUID(uuid)?.let { setActive(it) }
         }
         fetch()
-    }
-
-    // 续费恢复：签发一次性票据并轮换设备凭据，成功后替换正式订阅并删除占位配置。
-    private suspend fun MainDesign.recoverFromExpired(code: String) {
-        val apiBase = loadManagedCredentials()?.apiBase
-            ?.ifBlank { EndpointResolver.apiBase() }
-            ?: EndpointResolver.apiBase()
-        val ticket = issueManagedImportTicket(code, apiBase)
-        val credentials = exchangeManagedImportTicket(
-            ticket,
-            apiBase,
-            stableClientId(),
-        ).copy(accessCode = code)
-        if (isExpired(credentials.expiresAt)) return
-        val content = fetchManagedSubscription(credentials)
-        val expiredUuid = expiredProfileUuid()
-        val uuid = installManagedProfile(code, content)
-        saveManagedCredentials(credentials)
-        withProfile {
-            if (expiredUuid != null) {
-                runCatching { delete(expiredUuid) }
-            }
-        }
-        activationStore().edit()
-            .putString(KEY_CODE, code)
-            .putString(KEY_EXPIRES_AT, credentials.expiresAt)
-            .putString(KEY_PROFILE_UUID, uuid.toString())
-            .putLong(KEY_UPDATE_VERSION, queryUpdateVersion(code) ?: 0L)
-            .remove(KEY_EXPIRED_PROFILE_UUID)
-            .apply()
-        fetch()
-        showToast(R.string.subscription_recovered, ToastDuration.Long)
     }
 
     private suspend fun isActivationStillValid(code: String): Boolean {

@@ -22,6 +22,7 @@ class ClashService : BaseService() {
     private var reason: String? = null
 
     private val runtime = clashRuntime {
+        com.github.kr328.clash.service.traffic.ServiceTrafficAccounting.begin(self)
         val store = ServiceStore(self)
 
         val close = install(CloseModule(self))
@@ -36,6 +37,7 @@ class ClashService : BaseService() {
         install(AppListCacheModule(self))
         install(TimeZoneModule(self))
         install(SuspendModule(self))
+        install(TrafficReportingModule(self))
 
         try {
             while (isActive) {
@@ -61,6 +63,7 @@ class ClashService : BaseService() {
             reason = e.message
         } finally {
             withContext(NonCancellable) {
+                runCatching { com.github.kr328.clash.service.traffic.ServiceTrafficAccounting.finish(self) }
                 stopSelf()
             }
         }
