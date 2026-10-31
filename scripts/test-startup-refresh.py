@@ -8,6 +8,14 @@ r=Path(__file__).resolve().parents[1]
 a=(r/'app/src/main/java/com/github/kr328/clash/MainActivity.kt').read_text()
 d=(r/'design/src/main/java/com/github/kr328/clash/design/MainDesign.kt').read_text()
 l=(r/'design/src/main/res/layout/design_main.xml').read_text();ET.fromstring(l)
+# Well-formed XML alone does not validate Android data-binding declarations.
+# Check every layout so source merges cannot introduce duplicate variables.
+for layout in (r/'design/src/main/res').glob('layout*/*.xml'):
+ doc=ET.parse(layout).getroot()
+ for data in doc.findall('data'):
+  names=[node.get('name') for node in data.findall('variable')]
+  assert len(names)==len(set(names)), f'duplicate binding variable in {layout.name}: {names}'
+assert 'launchExpirySync' not in a and 'syncActivationState' not in a
 assert 'if (starting && request != Request.UpdateSubscription) return' in d
 assert 'setOf(Request.ToggleStatus, Request.ImportByCode, Request.UpdateSubscription)' in d
 assert 'subscriptionStatus' in l and 'subscriptionUpdating' in l

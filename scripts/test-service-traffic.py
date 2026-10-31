@@ -3,6 +3,9 @@ from pathlib import Path
 r=Path(__file__).resolve().parents[1]
 app=(r/'app/src/main/java/com/github/kr328/clash/MainActivity.kt').read_text()
 assert 'sendClientTraffic(' not in app and 'nextTrafficReportAt' not in app
+assert app.count('data class TrafficTotals(')==1
+for obsolete in ['TrafficCounterState', 'loadTrafficCounterState', 'saveTrafficCounterState', 'KEY_TRAFFIC_COUNTER']:
+ assert obsolete not in app, f'Activity still owns obsolete accounting state: {obsolete}'
 assert app.count('configureServiceTrafficReporting()')>=4
 for name in ['TunService.kt','ClashService.kt']:
  s=(r/'service/src/main/java/com/github/kr328/clash/service'/name).read_text()

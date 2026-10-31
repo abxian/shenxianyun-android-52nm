@@ -84,32 +84,6 @@ class MainActivity : BaseActivity<MainDesign>() {
             upload < previous.upload || download < previous.download
     }
 
-    private data class TrafficTotals(val upload: Long, val download: Long) {
-        operator fun minus(other: TrafficTotals) = TrafficTotals(
-            (upload - other.upload).coerceAtLeast(0L),
-            (download - other.download).coerceAtLeast(0L),
-        )
-
-        operator fun plus(other: TrafficTotals) = TrafficTotals(
-            upload + other.upload,
-            download + other.download,
-        )
-
-        fun total() = upload + download
-
-        fun regressedFrom(previous: TrafficTotals) =
-            upload < previous.upload || download < previous.download
-    }
-
-    private data class TrafficCounterState(
-        val code: String,
-        val counterId: String,
-        val sequence: Long,
-        val base: TrafficTotals,
-        val lastAcknowledged: TrafficTotals?,
-        val pending: TrafficTotals?,
-    )
-
     private companion object {
         const val ACTIVATION_STORE = ACTIVATION_STORE_NAME
         const val KEY_CODE = "code"
@@ -183,34 +157,6 @@ class MainActivity : BaseActivity<MainDesign>() {
         var subscriptionUpdateInFlight = false
         var subscriptionFailures = 0
         var subscriptionCheckDelay = UPDATE_CHECK_INTERVAL_MILLIS
-
-        fun launchExpirySync() {
-            val code = savedActivationCode()
-            val now = System.currentTimeMillis()
-            if (
-                clashRunning ||
-                !activityStarted ||
-                code.isBlank() ||
-                expirySyncInFlight ||
-                now - lastExpirySyncAt < EXPIRY_SYNC_INTERVAL_MILLIS
-            ) {
-                return
-            }
-
-            expirySyncInFlight = true
-            launch {
-                try {
-                    design.syncActivationState(code)
-                } catch (error: CancellationException) {
-                    throw error
-                } catch (_: Exception) {
-                    runCatching { EndpointResolver.rotate() }
-                } finally {
-                    lastExpirySyncAt = System.currentTimeMillis()
-                    expirySyncInFlight = false
-                }
-            }
-        }
 
         while (isActive) {
             select<Unit> {
@@ -539,46 +485,6 @@ class MainActivity : BaseActivity<MainDesign>() {
             .put("version",queryAppVersionName().asHeaderValue())
             .put("device","${Build.BRAND} ${Build.MODEL}")
         com.github.kr328.clash.service.traffic.ServiceTrafficAccounting.configure(this,config.toString())
-    }
-
-    private fun loadTrafficCounterState(code: String): TrafficCounterState? {
-        if (code.isBlank()) return null
-        val raw = activationStore().getString(KEY_TRAFFIC_COUNTER, null) ?: return null
-        return runCatching {
-            val json = JSONObject(raw)
-            if (json.getString("code") != code) return null
-            fun totals(prefix: String): TrafficTotals? {
-                if (!json.has("${prefix}_upload") || json.isNull("${prefix}_upload")) return null
-                return TrafficTotals(
-                    json.getLong("${prefix}_upload").coerceAtLeast(0L),
-                    json.getLong("${prefix}_download").coerceAtLeast(0L),
-                )
-            }
-            TrafficCounterState(
-                code = code,
-                counterId = json.getString("counter_id"),
-                sequence = json.getLong("sequence").coerceAtLeast(0L),
-                base = totals("base") ?: TrafficTotals(0L, 0L),
-                lastAcknowledged = totals("last"),
-                pending = totals("pending"),
-            )
-        }.getOrNull()
-    }
-
-    private fun saveTrafficCounterState(state: TrafficCounterState) {
-        if (state.code.isBlank()) return
-        val json = JSONObject().apply {
-            put("code", state.code)
-            put("counter_id", state.counterId)
-            put("sequence", state.sequence)
-            put("base_upload", state.base.upload)
-            put("base_download", state.base.download)
-            put("last_upload", state.lastAcknowledged?.upload ?: JSONObject.NULL)
-            put("last_download", state.lastAcknowledged?.download ?: JSONObject.NULL)
-            put("pending_upload", state.pending?.upload ?: JSONObject.NULL)
-            put("pending_download", state.pending?.download ?: JSONObject.NULL)
-        }
-        activationStore().edit().putString(KEY_TRAFFIC_COUNTER, json.toString()).apply()
     }
 
     private suspend fun enforceClientLimit(message: String) {
@@ -997,9 +903,6 @@ class MainActivity : BaseActivity<MainDesign>() {
         )
     }
 
-    private suspend fun queryUpdateVersion(code: String): Long? =
-        queryUpdateState(code)?.updateVersion
-
     private suspend fun MainDesign.checkAppUpdate() {
         val update = withContext(Dispatchers.IO) {
             val connection = (URL("${EndpointResolver.apiBase()}/api/app-version").openConnection() as HttpURLConnection).apply {
@@ -1037,13 +940,7 @@ class MainActivity : BaseActivity<MainDesign>() {
         withContext(Dispatchers.Main) {
             AlertDialog.Builder(this@MainActivity)
                 .setTitle(R.string.app_update_title)
-                .setMessage(
-                    getString(
-                        R.string.app_update_message,
-                        EndpointResolver.clientName(),
-                        update.first,
-                    )
-                )
+                .setMessage(getString(R.string.app_update_message, EndpointResolver.clientName(), update.first))
                 .setPositiveButton(R.string.app_update_now) { _, _ ->
                     startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(update.second)))
                 }

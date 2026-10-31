@@ -34,9 +34,6 @@
             name="activationExpiresAt"
             type="String" />
         <variable
-            name="activationExpiresAt"
-            type="String" />
-        <variable
             name="colorClashStarted"
             type="int" />
         <variable
