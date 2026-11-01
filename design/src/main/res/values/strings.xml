@@ -407,4 +407,5 @@
     <string name="main_processing">Working…</string>
     <string name="import_code_confirm">Import</string>
     <string name="import_code_guidance">Enter your code. Its status will appear here.</string>
+    <string name="app_update_changes">What is new</string>
 </resources>

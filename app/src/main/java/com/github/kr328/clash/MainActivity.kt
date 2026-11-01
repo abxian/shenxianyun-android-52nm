@@ -980,7 +980,7 @@ class MainActivity : BaseActivity<MainDesign>() {
                 val currentCode = packageManager.getPackageInfo(packageName, 0).versionCodeCompat
 
                 if (latestCode > currentCode && apkUrl.isNotBlank()) {
-                    Pair(versionName, apkUrl)
+                    Triple(versionName, apkUrl, json.optString("notes", "").takeUnless { it == "null" }.orEmpty().trim())
                 } else {
                     null
                 }
@@ -990,14 +990,40 @@ class MainActivity : BaseActivity<MainDesign>() {
         } ?: return
 
         withContext(Dispatchers.Main) {
-            AlertDialog.Builder(this@MainActivity)
-                .setTitle(R.string.app_update_title)
-                .setMessage(getString(R.string.app_update_message, EndpointResolver.clientName(), update.first))
+            val content = layoutInflater.inflate(R.layout.dialog_app_update, null)
+            content.findViewById<android.widget.TextView>(R.id.app_update_version).text = update.first
+            content.findViewById<android.widget.TextView>(R.id.app_update_description).text = getString(R.string.app_update_message, EndpointResolver.clientName(), update.first)
+            content.findViewById<android.widget.TextView>(R.id.app_update_notes).text = update.third
+            content.findViewById<android.view.View>(R.id.app_update_details).visibility =
+                if (update.third.isBlank()) android.view.View.GONE else android.view.View.VISIBLE
+            val dialog = AlertDialog.Builder(this@MainActivity)
+                .setView(content)
                 .setPositiveButton(R.string.app_update_now) { _, _ ->
                     startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(update.second)))
                 }
                 .setNegativeButton(R.string.app_update_later, null)
-                .show()
+                .create()
+            dialog.setOnShowListener {
+                dialog.window?.setBackgroundDrawable(
+                    ContextCompat.getDrawable(this@MainActivity, R.drawable.bg_sxy_code_dialog)
+                )
+                val density = resources.displayMetrics.density
+                for ((which, backgroundResource) in listOf(
+                    AlertDialog.BUTTON_POSITIVE to R.drawable.bg_sxy_update_button,
+                    AlertDialog.BUTTON_NEGATIVE to R.drawable.bg_sxy_action,
+                )) {
+                    dialog.getButton(which).apply {
+                        isAllCaps = false
+                        backgroundTintList = null
+                        setBackgroundResource(backgroundResource)
+                        setTextColor(ContextCompat.getColor(this@MainActivity, R.color.sxy_text_soft))
+                        minHeight = (48 * density).toInt()
+                        setPadding((18 * density).toInt(), (10 * density).toInt(),
+                            (18 * density).toInt(), (10 * density).toInt())
+                    }
+                }
+            }
+            dialog.show()
         }
     }
 
