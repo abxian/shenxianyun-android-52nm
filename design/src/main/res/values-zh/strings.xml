@@ -317,4 +317,6 @@
     <string name="shortcut_stop_long">停止 Clash 服务</string>
     <string name="activation_expiry_pending">到期时间：待同步</string>
     <string name="main_processing">处理中</string>
+    <string name="import_code_confirm">导入配置</string>
+    <string name="import_code_guidance">输入提取码后点击导入，验证结果会显示在这里。</string>
 </resources>

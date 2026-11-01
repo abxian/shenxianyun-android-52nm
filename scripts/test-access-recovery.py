@@ -9,7 +9,8 @@ network=(r/'app/src/main/java/com/github/kr328/clash/ManagedProfile.kt').read_te
 layout=(r/'design/src/main/res/layout/design_main.xml').read_text()
 assert '(clashRunning || activityStarted)' in s
 assert 'KEY_SUBSCRIPTION_REVISION' in s and 'KEY_ACCESS_RESTRICTION' in s
-assert 'val updateState = knownState ?: queryUpdateState(code)\n            val content = withTimeout(20_000) { fetchManagedSubscription(credentials) }' in s
+assert s.index('val updateState = knownState ?: queryUpdateState(code)') < s.index('val content = withTimeout(20_000) { fetchManagedSubscription(credentials) }')
+assert s.index('val updateState = knownState ?: queryUpdateState(code)') < s.index('val ticket = issueManagedImportTicket(code, apiBase)')
 assert 'error !is ManagedSubscriptionUnauthorized' not in s, 'Do not silently reauthorize revoked credentials'
 assert 'readManagedUpdateState(code, stableClientId())' in s
 assert 'if (status == 403 || status == 404) throw AccessStateRejected' in s

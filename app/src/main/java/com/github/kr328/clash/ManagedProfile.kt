@@ -58,7 +58,7 @@ internal suspend fun Context.issueManagedImportTicket(
         JSONObject().put("code", code).put("target", "shenxianyun"))
     val json=reply.json
     if(reply.status !in 200..299 || !json.optBoolean("ok"))
-        throw IllegalStateException(json.optString("message", "无法创建安全导入票据"))
+        throw ManagedImportRejected(importRejectionReason(reply.status, json.optString("code")))
     Uri.parse(json.optString("launch_url")).lastPathSegment?.takeIf {it.isNotBlank()}
         ?: throw IllegalStateException("安全导入票据格式无效")
 }
@@ -72,7 +72,7 @@ internal suspend fun Context.exchangeManagedImportTicket(
         JSONObject().put("ticket",ticket).put("client_id",clientId).put("platform","android"))
     val json=reply.json
     if(reply.status !in 200..299 || !json.optBoolean("ok") || json.optString("device_token").isBlank() || json.optString("subscription_url").isBlank())
-        throw IllegalStateException(json.optString("message", "安全导入票据无效或已过期"))
+        throw ManagedImportRejected(importRejectionReason(reply.status, json.optString("code")))
     ManagedCredentials(accessCode=json.optString("name"),apiBase=apiBase.trimEnd('/'),
         subscriptionUrl=json.getString("subscription_url"),deviceToken=json.getString("device_token"),
         expiresAt=json.optString("expires_at"),limitMode=json.optString("limit_mode","hybrid"))

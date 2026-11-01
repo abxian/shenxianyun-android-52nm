@@ -7,7 +7,6 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.PersistableBundle
-import android.text.InputType
 import android.widget.EditText
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.result.contract.ActivityResultContracts.RequestPermission
@@ -206,7 +205,7 @@ class MainActivity : BaseActivity<MainDesign>() {
                                             val entered = design.enteredAccessCode()
                                             if (savedActivationCode().isBlank()) {
                                                 if (entered.isBlank()) {
-                                                    design.showToast(R.string.import_code_empty, ToastDuration.Long)
+                                                    design.setSubscriptionStatus(getString(R.string.import_code_empty), false)
                                                 } else if (design.importSubscriptionCode(entered)) {
                                                     design.startClash()
                                                 }
@@ -588,33 +587,43 @@ class MainActivity : BaseActivity<MainDesign>() {
     }
 
     private fun MainDesign.showCodeImportDialog() {
-        val input = EditText(this@MainActivity).apply {
-            hint = getString(R.string.import_code_hint)
-            inputType = InputType.TYPE_CLASS_TEXT
-            setSingleLine(true)
-            setText(savedActivationCode())
-            selectAll()
-        }
-
-        AlertDialog.Builder(this@MainActivity)
-            .setTitle(R.string.import_code_title)
-            .setView(input)
+        val content = layoutInflater.inflate(R.layout.dialog_code_import, null)
+        val input = content.findViewById<EditText>(R.id.code_dialog_input)
+        val status = content.findViewById<android.widget.TextView>(R.id.code_dialog_status)
+        input.setText(savedActivationCode())
+        input.selectAll()
+        val dialog = AlertDialog.Builder(this@MainActivity)
+            .setView(content)
             .setNegativeButton(android.R.string.cancel, null)
-            .setPositiveButton(android.R.string.ok) { _, _ ->
+            .setPositiveButton(R.string.import_code_confirm, null)
+            .create()
+        dialog.setOnShowListener {
+            dialog.window?.setBackgroundDrawable(
+                ContextCompat.getDrawable(this@MainActivity, R.drawable.bg_sxy_code_dialog)
+            )
+            val confirm = dialog.getButton(AlertDialog.BUTTON_POSITIVE)
+            confirm.setOnClickListener {
                 val code = input.text.toString().trim()
-
                 if (code.isBlank()) {
-                    launch {
-                        showToast(R.string.import_code_empty, ToastDuration.Long)
-                    }
-                    return@setPositiveButton
+                    status.setText(R.string.import_code_empty)
+                    input.requestFocus()
+                    return@setOnClickListener
                 }
-
+                confirm.isEnabled = false
+                input.isEnabled = false
                 launch {
-                    importSubscriptionCode(code)
+                    try {
+                        val imported = importSubscriptionCode(code, onStatus = { status.text = it })
+                        // A failed import leaves the input and explanation visible.
+                        if (imported) dialog.dismiss()
+                    } finally {
+                        confirm.isEnabled = true
+                        input.isEnabled = true
+                    }
                 }
             }
-            .show()
+        }
+        dialog.show()
     }
 
     private fun MainDesign.showExpiredDialog() {
@@ -668,9 +677,13 @@ class MainActivity : BaseActivity<MainDesign>() {
                 if (savedActivationCode() == code)
                     setSubscriptionStatus("配置更新失败，已保留原配置，请稍后重试", false)
                 false
-            } catch (_: Exception) {
-                if (savedActivationCode() == code)
-                    setSubscriptionStatus("配置更新失败，已保留原配置，请稍后重试", false)
+            } catch (error: Exception) {
+                if (savedActivationCode() == code) {
+                    val message = if (error is AccessStateRejected)
+                        codeImportFailureMessage(error.reason)
+                    else "配置更新失败，已保留原配置，请稍后重试"
+                    setSubscriptionStatus(message, false)
+                }
                 false
             } finally {
                 if (subscriptionRefreshCode == code) setSubscriptionUpdating(false)
@@ -683,13 +696,19 @@ class MainActivity : BaseActivity<MainDesign>() {
         silent: Boolean = false,
         notifySuccess: Boolean = true,
         knownState: SubscriptionUpdateState? = null,
+        onStatus: ((String) -> Unit)? = null,
     ): Boolean = subscriptionRefreshMutex.withLock {
         // A queued refresh must not restore the code that the user has just replaced.
         if (silent && savedActivationCode() != code) return@withLock false
         try {
             if (!silent) {
-                showToast(R.string.import_code_fetching, ToastDuration.Long)
+                setSubscriptionStatus("正在验证提取码…", true)
+                onStatus?.invoke("正在验证提取码…")
             }
+            // Read authoritative status before registration: invalid and expired
+            // codes must not collapse into the legacy ticket endpoint's 403.
+            // Snapshot revision before download; do not consume a newer revision later.
+            val updateState = knownState ?: queryUpdateState(code)
 
             val activeUuidBefore = withProfile { queryActive()?.uuid }
             val managedUuidBefore = managedProfileUuid()
@@ -704,14 +723,9 @@ class MainActivity : BaseActivity<MainDesign>() {
                 for (attempt in 0 until SUBSCRIPTION_NETWORK_ATTEMPTS) {
                     if (attempt > 0) {
                         if (!silent) {
-                            showToast(
-                                getString(
-                                    R.string.import_code_retrying,
-                                    attempt,
-                                    SUBSCRIPTION_NETWORK_RETRIES,
-                                ),
-                                ToastDuration.Long,
-                            )
+                            val message = "网络连接不稳定，正在重试（${attempt}/${SUBSCRIPTION_NETWORK_RETRIES}）…"
+                            setSubscriptionStatus(message, true)
+                            onStatus?.invoke(message)
                         }
                         delay(subscriptionRetryDelayMillis(attempt))
                         EndpointResolver.rotate()
@@ -727,6 +741,8 @@ class MainActivity : BaseActivity<MainDesign>() {
                         break
                     } catch (e: CancellationException) {
                         throw e
+                    } catch (e: ManagedImportRejected) {
+                        throw e // Definitive rejection must not register four times.
                     } catch (e: Exception) {
                         lastError = e
                     }
@@ -737,15 +753,18 @@ class MainActivity : BaseActivity<MainDesign>() {
             }
             if (isExpired(credentials.expiresAt)) {
                 if (!silent) {
-                    showToast(R.string.import_code_expired, ToastDuration.Long)
+                    val message = codeImportFailureMessage("expired")
+                    setSubscriptionStatus(message, false)
+                    onStatus?.invoke(message)
                     return@withLock false
                 }
                 // 自动刷新不能只相信客户端内缓存的旧日期。续费后服务端可能已经延长
                 // 设备令牌，继续尝试拉取；若确实过期，服务端会拒绝且旧配置保持不变。
             }
-            // Snapshot the revision BEFORE downloading. A newer update arriving
-            // during download must remain detectable on the next poll.
-            val updateState = knownState ?: queryUpdateState(code)
+            if (!silent) {
+                setSubscriptionStatus("提取码有效，正在获取配置…", true)
+                onStatus?.invoke("提取码有效，正在获取配置…")
+            }
             val content = withTimeout(20_000) { fetchManagedSubscription(credentials) }
             if (silent && savedActivationCode() != code) return@withLock false
             val expiresAt = updateState.expiresAt.orEmpty()
@@ -775,18 +794,32 @@ class MainActivity : BaseActivity<MainDesign>() {
             configureServiceTrafficReporting()
             startupSubscriptionRefreshState.set(2)
             launch { safeFetch() }
-            if (notifySuccess) {
-                showToast(
-                    if (silent) R.string.subscription_updated else R.string.import_code_success,
-                    ToastDuration.Long
-                )
+            if (!silent) {
+                setSubscriptionStatus("配置已导入", false)
+                onStatus?.invoke("配置已导入")
+            } else if (notifySuccess) {
+                showToast(R.string.subscription_updated, ToastDuration.Long)
             }
             true
         } catch (e: CancellationException) {
-            throw e
+            if (e !is kotlinx.coroutines.TimeoutCancellationException) throw e
+            if (!silent) {
+                val message = codeImportFailureMessage(networkFailure = true)
+                setSubscriptionStatus(message, false)
+                onStatus?.invoke(message)
+            }
+            false
         } catch (e: Exception) {
             if (!silent) {
-                showToast(R.string.import_code_failed_after_retries, ToastDuration.Long)
+                val reason = when (e) {
+                    is AccessStateRejected -> e.reason
+                    is ManagedImportRejected -> e.reason
+                    is ManagedStateRetryAfter -> "busy"
+                    else -> null
+                }
+                val message = codeImportFailureMessage(reason, e is java.io.IOException)
+                setSubscriptionStatus(message, false)
+                onStatus?.invoke(message)
             }
             false
         }
@@ -817,7 +850,13 @@ class MainActivity : BaseActivity<MainDesign>() {
             }
             if (activationStore().getString(KEY_ACCESS_RESTRICTION, "").orEmpty().isNotBlank() ||
                 !isActivationStillValid(code) || onExpiredPlaceholder()) {
-                setSubscriptionStatus("请确认提取码有效并联网更新后重试", false)
+                val restriction = activationStore().getString(KEY_ACCESS_RESTRICTION, "").orEmpty()
+                val message = when {
+                    restriction.isNotBlank() -> codeImportFailureMessage(restriction)
+                    !isActivationStillValid(code) -> codeImportFailureMessage("expired")
+                    else -> "请联网更新配置后重试"
+                }
+                setSubscriptionStatus(message, false)
                 return
             }
             active = withProfile { queryActive() }

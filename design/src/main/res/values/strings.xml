@@ -405,4 +405,6 @@
     <string name="shortcut_stop_long">Stop Clash service</string>
     <string name="activation_expiry_pending">Expiry: awaiting sync</string>
     <string name="main_processing">Working…</string>
+    <string name="import_code_confirm">Import</string>
+    <string name="import_code_guidance">Enter your code. Its status will appear here.</string>
 </resources>

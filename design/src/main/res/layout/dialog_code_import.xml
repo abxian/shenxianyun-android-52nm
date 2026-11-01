@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent" android:layout_height="wrap_content"
+    android:background="@drawable/bg_sxy_code_dialog" android:orientation="vertical" android:padding="24dp">
+    <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:text="@string/import_code_title" android:textColor="@color/sxy_text_soft" android:textSize="22sp" android:textStyle="bold" />
+    <EditText android:id="@+id/code_dialog_input" android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:layout_marginTop="20dp" android:minHeight="56dp" android:background="@drawable/bg_sxy_code_input"
+        android:backgroundTint="@null" android:paddingHorizontal="18dp" android:paddingVertical="14dp"
+        android:textColor="@color/sxy_text_soft" android:textColorHint="@color/sxy_text_muted"
+        android:hint="@string/import_code_hint" android:inputType="textVisiblePassword" android:singleLine="true" android:imeOptions="actionDone" />
+    <TextView android:id="@+id/code_dialog_status" android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:layout_marginTop="12dp" android:minHeight="44dp" android:accessibilityLiveRegion="polite"
+        android:text="@string/import_code_guidance" android:textColor="@color/sxy_text_soft" android:textSize="14sp" />
+</LinearLayout>

@@ -27,7 +27,7 @@ assert 'runCatching { design.fetch() }' not in main
 refresh=a[a.index('private fun MainDesign.requestSubscriptionRefresh'):a.index('private suspend fun MainDesign.importSubscriptionCode')]
 assert 'shouldReuseSubscriptionRefresh(subscriptionRefreshCode, code, existing?.isActive == true)' in refresh
 assert 'setSubscriptionStatus("正在更新配置' in refresh
-assert 'setSubscriptionStatus("配置更新失败，已保留原配置' in refresh
+assert 'else "配置更新失败，已保留原配置' in refresh
 assert 'knownState = state' in a and 'val updateState = knownState ?: queryUpdateState(code)' in a
 start=a[a.index('private suspend fun MainDesign.startClash()'):a.index('val vpnRequest = startClashService()')]
 assert 'requestSubscriptionRefresh(force = true)' in start and 'awaitStartupRefresh(it)' in start

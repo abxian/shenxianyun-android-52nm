@@ -109,6 +109,13 @@
 
                 <EditText
                     android:id="@+id/access_code_input"
+                    android:background="@drawable/bg_sxy_code_input"
+                    android:backgroundTint="@null"
+                    android:paddingHorizontal="18dp"
+                    android:paddingVertical="14dp"
+                    android:minHeight="56dp"
+                    android:textColor="@color/sxy_text_soft"
+                    android:textColorHint="@color/sxy_text_muted"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginHorizontal="24dp"
@@ -193,6 +200,11 @@
                     android:layout_height="wrap_content"
                     android:layout_marginTop="8dp"
                     android:text="@{subscriptionStatus}"
+                    android:visibility="@{subscriptionStatus == null ? View.GONE : View.VISIBLE}"
+                    android:accessibilityLiveRegion="polite"
+                    android:paddingHorizontal="16dp"
+                    android:paddingVertical="10dp"
+                    android:background="@drawable/bg_sxy_action"
                     android:textColor="@color/sxy_text_muted"
                     android:textAppearance="@style/TextAppearance.MaterialComponents.Body2" />
 
