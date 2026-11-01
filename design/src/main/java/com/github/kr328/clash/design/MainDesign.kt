@@ -56,6 +56,7 @@ class MainDesign(context: Context) : Design<MainDesign.Request>(context) {
 
     suspend fun setStarting(value: Boolean) = withContext(Dispatchers.Main) {
         starting = value
+        binding.starting = value
         binding.powerButton.isEnabled = !value
         binding.accessCodeInput.isEnabled = !value
     }

@@ -640,20 +640,37 @@ class MainActivity : BaseActivity<MainDesign>() {
         }
         subscriptionRefreshCode = code
         return async {
-            setSubscriptionStatus("正在更新订阅，获取最新节点...", true)
+            setSubscriptionStatus("正在更新配置…", true)
             try {
-                checkSubscriptionUpdate(forceDownload = force)
+                coroutineScope {
+                    val progress = launch {
+                        var elapsed = 0
+                        while (isActive && savedActivationCode() == code) {
+                            val message = if (elapsed >= 5)
+                                "配置正在后台更新（${elapsed}秒）"
+                            else "正在更新配置…（${elapsed}秒）"
+                            setSubscriptionStatus(message, true)
+                            delay(1_000)
+                            elapsed++
+                        }
+                    }
+                    try {
+                        checkSubscriptionUpdate(forceDownload = force)
+                    } finally {
+                        progress.cancel()
+                    }
+                }
                 if (savedActivationCode() != code) return@async false
-                setSubscriptionStatus("节点已更新", false)
+                setSubscriptionStatus("配置已更新", false)
                 true
             } catch (error: CancellationException) {
                 if (error !is kotlinx.coroutines.TimeoutCancellationException) throw error
                 if (savedActivationCode() == code)
-                    setSubscriptionStatus("暂未更新，已保留原节点，请稍后重试", false)
+                    setSubscriptionStatus("配置更新失败，已保留原配置，请稍后重试", false)
                 false
             } catch (_: Exception) {
                 if (savedActivationCode() == code)
-                    setSubscriptionStatus("暂未更新，已保留原节点，请稍后重试", false)
+                    setSubscriptionStatus("配置更新失败，已保留原配置，请稍后重试", false)
                 false
             } finally {
                 if (subscriptionRefreshCode == code) setSubscriptionUpdating(false)
@@ -789,7 +806,15 @@ class MainActivity : BaseActivity<MainDesign>() {
             // Every Start requests current nodes. Share an in-flight same-code
             // refresh, but a previously completed check never skips this update.
             val refresh = requestSubscriptionRefresh(force = true)
-            if (refresh != null) refresh.await()
+            when (refresh?.let { awaitStartupRefresh(it) }) {
+                null -> {
+                    // Keep the same refresh in the background; only an existing,
+                    // still-valid managed profile may start after the UI wait expires.
+                    setSubscriptionStatus("配置正在后台更新", true)
+                }
+                false -> return
+                true -> Unit
+            }
             if (activationStore().getString(KEY_ACCESS_RESTRICTION, "").orEmpty().isNotBlank() ||
                 !isActivationStillValid(code) || onExpiredPlaceholder()) {
                 setSubscriptionStatus("请确认提取码有效并联网更新后重试", false)

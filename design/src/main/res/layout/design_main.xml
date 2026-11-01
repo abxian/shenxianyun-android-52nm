@@ -29,6 +29,7 @@
             type="String" />
         <variable name="subscriptionStatus" type="String" />
         <variable name="subscriptionUpdating" type="boolean" />
+        <variable name="starting" type="boolean" />
         <variable name="renewalNeeded" type="boolean" />
         <variable
             name="activationExpiresAt"
@@ -96,14 +97,6 @@
                 <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="5dp"
-                    android:text="智能加速 · 稳定连接"
-                    android:textAppearance="@style/TextAppearance.MaterialComponents.Body2"
-                    android:textColor="@color/sxy_text_muted" />
-
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
                     android:layout_marginTop="6dp"
                     android:background="?attr/selectableItemBackground"
                     android:onClick="@{() -> self.request(Request.SelectLine)}"
@@ -163,16 +156,16 @@
                         android:layout_width="182dp"
                         android:layout_height="182dp"
                         android:layout_gravity="center"
-                        android:background="@drawable/bg_sxy_power_inner"
-                        android:elevation="10dp"
+                        android:background="@{clashRunning ? @drawable/bg_sxy_power_running : @drawable/bg_sxy_power_inner}"
+                        android:elevation="4dp"
                         android:onClick="@{() -> self.request(Request.ToggleStatus)}"
                         android:theme="@style/AppThemeDark"
-                        android:text="@{clashRunning ? @string/main_stop : @string/main_start}"
+                        android:text="@{starting ? @string/main_processing : (clashRunning ? @string/main_stop : @string/main_start)}"
                         android:textAppearance="@style/TextAppearance.MaterialComponents.Headline5"
                         android:textColor="@android:color/white"
                         app:backgroundTint="@null"
                         app:cornerRadius="92dp"
-                        app:icon="@{clashRunning ? @drawable/ic_baseline_stop : @drawable/ic_baseline_vpn_lock}"
+                        app:icon="@drawable/ic_sxy_power"
                         app:iconGravity="top"
                         app:iconPadding="8dp"
                         app:iconSize="42dp"

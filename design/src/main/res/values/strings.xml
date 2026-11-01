@@ -51,9 +51,9 @@
     <string name="select_node_empty">No selectable nodes</string>
     <string name="select_node_applied">Node selected</string>
     <string name="select_node_failed">Failed to select node</string>
-    <string name="update_subscription">Update Nodes</string>
-    <string name="update_subscription_summary">Refresh the node list for the current code</string>
-    <string name="subscription_updated">Subscription updated</string>
+    <string name="update_subscription">Update Configuration</string>
+    <string name="update_subscription_summary">Refresh the configuration for the current code</string>
+    <string name="subscription_updated">Configuration updated</string>
     <string name="app_update_title">New version available</string>
     <string name="app_update_message">A new %1$s version %2$s is available.</string>
     <string name="app_update_now">Update now</string>
@@ -404,4 +404,5 @@
     <string name="shortcut_stop_short">Stop Clash</string>
     <string name="shortcut_stop_long">Stop Clash service</string>
     <string name="activation_expiry_pending">Expiry: awaiting sync</string>
+    <string name="main_processing">Working…</string>
 </resources>

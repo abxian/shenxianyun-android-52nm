@@ -26,13 +26,21 @@ assert 'design.requestSubscriptionRefresh(force = true)' in main
 assert 'runCatching { design.fetch() }' not in main
 refresh=a[a.index('private fun MainDesign.requestSubscriptionRefresh'):a.index('private suspend fun MainDesign.importSubscriptionCode')]
 assert 'shouldReuseSubscriptionRefresh(subscriptionRefreshCode, code, existing?.isActive == true)' in refresh
-assert 'setSubscriptionStatus("正在更新订阅' in refresh
-assert 'setSubscriptionStatus("暂未更新，已保留原节点' in refresh
+assert 'setSubscriptionStatus("正在更新配置' in refresh
+assert 'setSubscriptionStatus("配置更新失败，已保留原配置' in refresh
 assert 'knownState = state' in a and 'val updateState = knownState ?: queryUpdateState(code)' in a
 start=a[a.index('private suspend fun MainDesign.startClash()'):a.index('val vpnRequest = startClashService()')]
-assert 'requestSubscriptionRefresh(force = true)' in start and 'refresh.await()' in start
+assert 'requestSubscriptionRefresh(force = true)' in start and 'awaitStartupRefresh(it)' in start
 assert 'withTimeoutOrNull(1_500)' not in start and 'KEY_ACCESS_RESTRICTION' in start
 returned=a[a.index('Event.ActivityStart ->'):a.index('Event.ServiceRecreated,')]
 assert 'requestSubscriptionRefresh' not in returned
 assert 'openingRefreshRequested.compareAndSet(false, true)' in main
 print('276 actual startup/request/status/coalescing/restriction integration guards passed')
+
+# A slow refresh continues in background; failures stop before VPN start.
+assert 'when (refresh?.let { awaitStartupRefresh(it) })' in start
+assert 'false -> return' in start
+assert '配置正在后台更新' in start
+assert 'binding.starting = value' in d and '@string/main_processing' in l
+assert '智能加速' not in l and '稳定连接' not in l
+print('328 bounded startup wait, failure stop and visible busy-state integration passed')
