@@ -13,7 +13,23 @@ assert 'val updateState = knownState ?: queryUpdateState(code)\n            val 
 assert 'error !is ManagedSubscriptionUnauthorized' not in s, 'Do not silently reauthorize revoked credentials'
 assert 'readManagedUpdateState(code, stableClientId())' in s
 assert 'if (status == 403 || status == 404) throw AccessStateRejected' in s
-assert 'NET_CAPABILITY_NOT_VPN' in network[network.index('internal suspend fun Context.readManagedUpdateState'):]
+# State checks now delegate to the shared management transport. Follow that
+# wiring: merely keeping the old function-name-local text check rejects the
+# safe refactor, while deleting the check could hide VPN-dependent requests.
+transport=(r/'service/src/main/java/com/github/kr328/clash/service/traffic/RelayTransport.kt').read_text()
+state=network[network.index('internal suspend fun Context.readManagedUpdateState'):]
+compact=lambda text: ''.join(text.split())
+assert 'RelayTransport.entry(' in state and '"state"' in state, 'State must use shared management transport'
+request=transport[transport.index('fun request('):transport.index('private fun grant(')]
+assert 'hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)' in compact(request)
+assert 'hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)' in compact(request), 'Underlying routes must exclude VPN networks'
+assert 'for(networkinunderlying+listOf(null))' in compact(request), 'Underlying network must be attempted before default routing'
+assert 'network?.openConnection(target)' in compact(request), 'Selected underlying network must own the socket'
+assert 'instanceFollowRedirects=false' in compact(request), 'Do not forward managed credentials through redirects'
+entry=transport[transport.index('fun entry('):transport.index('fun enqueue(')]
+assert '"state"->"/api/v2/client/state"' in compact(entry)
+assert 'request(context,apiBase.trimEnd' in compact(entry) and '/v1/client/$TENANT/$operation' in entry
+assert 'primary.status<500' in compact(entry), 'Business auth failures must not replay through fallback'
 assert 'renewalNeeded' in layout and 'Request.RenewCode' in layout
 assert 'activationCode == null ? View.GONE : View.VISIBLE' in layout
 assert '!clashRunning || activationExpiresAt == null' not in layout

@@ -508,3 +508,8 @@ Actions Secrets 中的正式签名，发布到本 52nm 仓库的非预发布 Git
 ## 2026-11-01 同一服务的首次提取码导入入口（317补充）
 
 双品牌提取码验证/订阅状态/一次性票据申请和设备交换通过同一ll.sxnn.de固定tenant入口，国内DIRECT仍优先、失败备用；不增加新服务器，不共享客户数据库/密钥。relay1.2固定允许verify/state/ticket/exchange的POST正文和官方target，不需要尚不存在的设备token；原主站继续校验提取码/有效期/设备数/一次性票据和既有限速，不缓存凭据或节点。POST /api/v2/client/{verify,state}分别复用原校验/版本状态语义，避免国外入口路径带明文提取码。消费者与上报最终ACK仍按前阶段原实现。交换410/401/403等业务拒绝不自动走备用再消费；网络超时的不确定结果不假称成功，保留原配置。客户端仅验证分支编译，未改正式版本或分发，等用户通知云构建完成后再查准确新source。
+
+
+### 2026-11-01 共享管理网络守卫修正（317）
+
+导入入口接入RelayTransport之后，`scripts/test-access-recovery.py`仍要求NET_CAPABILITY_NOT_VPN文字位于ManagedProfile.readManagedUpdateState内部，导致CI在编译前失败。现按state→entry→request真实调用链核对：非VPN且有Internet的网络优先、实际network.openConnection绑定、默认路由只作退路、禁止redirect、业务拒绝不重放。原恢复/启动/限制断言保留；负对照移除非VPN筛选/网络绑定/状态调用都会使守卫失败。完整APK验证重新提交后不等待，正式版本/签名不改。
