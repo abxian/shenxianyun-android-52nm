@@ -498,3 +498,8 @@ Actions Secrets 中的正式签名，发布到本 52nm 仓库的非预发布 Git
 - APK 产物
 - Gradle cache
 - 私密密码和密钥
+
+
+## 2026-11-01 国外管理备用（task317）
+
+`service/.../traffic/RelayTransport.kt`：固定品牌租户ll.sxnn.de管理入口，底层非VPN网络优先/default回退、严格TLS无重定向。中心grant在原TrafficSecureStore加密文件缓存，configure后台异步预热，不在UI线程网络IO。ServiceTrafficAccounting冻结pendingObservedAt与原counter/seq持久化；国内主站失败才relay，202排队不当已入账，只有applied+committed或原站成功accept。断线重放相同payload，不生成新timestamp导致409。MainActivity心跳也走相同非VPN请求+固定relay备用；ManagedProfile订阅失败实时向固定tenant代理获取最新配置，401/403不走备用绕鉴权，不缓存节点。旧JSON缺pendingObservedAt首次冻结补值，旧累计/ACK字段兼容。完整编译使用现有GitHub Build APK/app+service unit工作流，提交后按用户约定不等待，不等于正式发版/真机已验。

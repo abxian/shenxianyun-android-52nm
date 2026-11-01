@@ -1,5 +1,6 @@
 package com.github.kr328.clash
 
+import com.github.kr328.clash.service.traffic.RelayTransport
 import android.content.Context
 import android.net.Uri
 import android.net.ConnectivityManager
@@ -281,7 +282,8 @@ internal suspend fun Context.fetchManagedSubscription(
                 setRequestProperty("Authorization", "Bearer ${credentials.deviceToken}")
                 setRequestProperty("User-Agent", "Shenxianyun-Android/Managed")
             }
-            if (connection.responseCode == 401) throw ManagedSubscriptionUnauthorized()
+            if (connection.responseCode == 401 || connection.responseCode == 403) throw ManagedSubscriptionUnauthorized()
+            if (connection.responseCode >= 500) throw IOException("subscription origin unavailable")
             if (connection.responseCode !in 200..299) {
                 throw IllegalStateException("受管订阅获取失败，请重新导入提取码")
             }
@@ -294,7 +296,8 @@ internal suspend fun Context.fetchManagedSubscription(
             connection?.disconnect()
         }
     }
-    throw failure ?: IOException("订阅网络不可用，已保留原配置")
+    return@withContext try { RelayTransport.subscription(this@fetchManagedSubscription, credentials.deviceToken) }
+    catch (_: Exception) { throw failure ?: IOException("订阅网络不可用，已保留原配置") }
 }
 
 internal suspend fun Context.installManagedProfile(

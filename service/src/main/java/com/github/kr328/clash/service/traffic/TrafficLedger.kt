@@ -18,6 +18,7 @@ data class LedgerCounter(
     var acknowledged: ByteTotals=ByteTotals(),
     var sequence: Long=0,
     var pending: ByteTotals?=null,
+    var pendingObservedAt: Long=0,
 ) {
     fun observe(next: ByteTotals) {
         require(!next.regressedFrom(raw))
@@ -25,18 +26,18 @@ data class LedgerCounter(
         raw=next
     }
     fun freeze(maxBytes: Long=5L*1024*1024*1024): ByteTotals? {
-        pending?.let { return it }
+        pending?.let { if(pendingObservedAt==0L)pendingObservedAt=System.currentTimeMillis()/1000;return it }
         val delta=total-acknowledged
         if(delta.isEmpty()) return null
         val up=delta.upload.coerceAtMost(maxBytes)
         val down=delta.download.coerceAtMost(maxBytes-up)
-        return (acknowledged+ByteTotals(up,down)).also { pending=it }
+        return (acknowledged+ByteTotals(up,down)).also { pending=it;pendingObservedAt=System.currentTimeMillis()/1000 }
     }
     fun accept(sent: ByteTotals, sentSequence: Long) {
         require(sent==pending && sentSequence==sequence+1)
-        acknowledged=sent;sequence=sentSequence;pending=null
+        acknowledged=sent;sequence=sentSequence;pending=null;pendingObservedAt=0
     }
     fun rebase(newId: String) {
-        total=total-acknowledged;acknowledged=ByteTotals();pending=null;sequence=0;id=newId
+        total=total-acknowledged;acknowledged=ByteTotals();pending=null;pendingObservedAt=0;sequence=0;id=newId
     }
 }

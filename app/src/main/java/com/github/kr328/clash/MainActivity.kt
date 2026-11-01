@@ -382,27 +382,17 @@ class MainActivity : BaseActivity<MainDesign>() {
                 put("app_version", appVersion)
                 put("device_name", "${Build.BRAND} ${Build.MODEL}")
             }.toString().toByteArray(Charsets.UTF_8)
-            val connection = (URL("${credentials.apiBase}/api/v2/client/$path").openConnection() as HttpURLConnection).apply {
-                connectTimeout = 5000
-                readTimeout = 5000
-                requestMethod = "POST"
-                doOutput = true
-                setRequestProperty("Authorization", "Bearer ${credentials.deviceToken}")
-                setRequestProperty("Content-Type", "application/json")
-                setRequestProperty("User-Agent", "Shenxianyun-Android/$appVersion")
-                setRequestProperty("X-Client-Id", stableClientId())
-            }
             try {
-                connection.outputStream.use { it.write(body) }
-                val statusCode = connection.responseCode
-                val stream = if (statusCode in 200..299) {
-                    connection.inputStream
-                } else {
-                    connection.errorStream
-                }
-                val json = runCatching {
-                    JSONObject(stream?.bufferedReader()?.use { it.readText() }.orEmpty())
+                val primary = runCatching {
+                    com.github.kr328.clash.service.traffic.RelayTransport.request(
+                        this@MainActivity, "${credentials.apiBase}/api/v2/client/$path", "POST",
+                        credentials.deviceToken, JSONObject(String(body, Charsets.UTF_8)))
                 }.getOrNull()
+                val reply = if (primary != null && primary.status < 500) primary else
+                    com.github.kr328.clash.service.traffic.RelayTransport.presence(
+                        this@MainActivity, credentials.deviceToken, path, JSONObject(String(body, Charsets.UTF_8)))
+                val statusCode = reply.status
+                val json = reply.json
                 if (
                     status != "offline" &&
                     statusCode == 403 &&
@@ -428,8 +418,6 @@ class MainActivity : BaseActivity<MainDesign>() {
                     clearPendingPresence(pendingId)
                 }
             } catch (_: Exception) {
-            } finally {
-                connection.disconnect()
             }
             return@withContext
         }

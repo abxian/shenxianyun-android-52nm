@@ -36,6 +36,7 @@ object ServiceTrafficAccounting {
         require(obj.getString("api_base").startsWith("https://"))
         require(obj.getString("device_token").isNotBlank() && obj.getString("profile").isNotBlank())
         TrafficSecureStore.write(context,CONFIG,json)
+        RelayTransport.prime(context,obj.getString("api_base"),obj.getString("device_token"))
     }
     private fun totals(json: JSONObject,key: String)=json.optJSONObject(key)?.let {ByteTotals(it.getLong("up"),it.getLong("down"))} ?: ByteTotals()
     private fun encode(value: ByteTotals)=JSONObject().put("up",value.upload).put("down",value.download)
@@ -47,7 +48,7 @@ object ServiceTrafficAccounting {
             val array=JSONObject(saved).getJSONArray("counters")
             for(i in 0 until array.length()) {
                 val j=array.getJSONObject(i)
-                counters.add(LedgerCounter(j.getString("id"),j.getString("run"),j.getString("scope"),j.getString("config"),totals(j,"raw"),totals(j,"total"),totals(j,"ack"),j.getLong("sequence"),if(j.has("pending"))totals(j,"pending")else null))
+                counters.add(LedgerCounter(j.getString("id"),j.getString("run"),j.getString("scope"),j.getString("config"),totals(j,"raw"),totals(j,"total"),totals(j,"ack"),j.getLong("sequence"),if(j.has("pending"))totals(j,"pending")else null,j.optLong("pending_observed_at")))
             }
         }
         initialized=true
@@ -56,7 +57,7 @@ object ServiceTrafficAccounting {
         val array=JSONArray()
         counters.forEach { c ->
             val j=JSONObject().put("id",c.id).put("run",c.run).put("scope",c.scope).put("config",c.configuration).put("raw",encode(c.raw)).put("total",encode(c.total)).put("ack",encode(c.acknowledged)).put("sequence",c.sequence)
-            c.pending?.let {j.put("pending",encode(it))};array.put(j)
+            c.pending?.let {j.put("pending",encode(it)).put("pending_observed_at",c.pendingObservedAt)};array.put(j)
         }
         TrafficSecureStore.write(context,STATE,JSONObject().put("counters",array).toString())
     }
@@ -123,6 +124,18 @@ object ServiceTrafficAccounting {
     }
     private data class Result(val kind: String,val retryAfter: Long=0)
     private fun send(context: Context,c: LedgerCounter,total: ByteTotals,sequence: Long): Result {
+        val primary=sendPrimary(context,c,total,sequence)
+        if(primary.kind!="failed" || primary.retryAfter>0)return primary
+        return try {
+            val config=JSONObject(c.configuration)
+            val body=JSONObject().put("counter_id",c.id).put("sequence",sequence).put("observed_at",c.pendingObservedAt).put("upload_total",total.upload).put("download_total",total.download).put("observed_at",c.pendingObservedAt)
+            val reply=RelayTransport.enqueue(context,config.getString("api_base"),config.getString("device_token"),body)
+            // Queue acceptance is not an accounting ACK; keep the frozen packet.
+            if(reply.status==200 && reply.json.optString("state")=="applied" && reply.json.optBoolean("committed"))Result("accepted")
+            else Result("failed",maxOf(30_000L,reply.retryAfter))
+        }catch(_: Exception){Result("failed")}
+    }
+    private fun sendPrimary(context: Context,c: LedgerCounter,total: ByteTotals,sequence: Long): Result {
         val config=JSONObject(c.configuration)
         val url=URL(config.getString("api_base").trimEnd('/')+"/api/v2/client/traffic")
         val manager=context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
@@ -135,7 +148,7 @@ object ServiceTrafficAccounting {
             setRequestProperty("User-Agent","Shenxianyun-Android/"+config.getString("version"))
         }
         return try {
-            val body=JSONObject().put("counter_id",c.id).put("sequence",sequence).put("upload_total",total.upload).put("download_total",total.download).put("platform","android").put("app_name",config.optString("app_name", "吾爱云安卓端")).put("app_version",config.getString("version")).put("device_name",config.getString("device"))
+            val body=JSONObject().put("counter_id",c.id).put("sequence",sequence).put("observed_at",c.pendingObservedAt).put("upload_total",total.upload).put("download_total",total.download).put("platform","android").put("app_name",config.optString("app_name", "吾爱云安卓端")).put("app_version",config.getString("version")).put("device_name",config.getString("device"))
             connection.outputStream.use {it.write(body.toString().toByteArray(Charsets.UTF_8))}
             val status=connection.responseCode
             val text=(if(status in 200..299)connection.inputStream else connection.errorStream)?.bufferedReader()?.use {it.readText()}.orEmpty()
