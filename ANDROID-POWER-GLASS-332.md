@@ -1,0 +1,9 @@
+# Android double-circle power and switch-code controls / 2026-11-02 / task332
+
+The user reference calls for a translucent white outer circle around the blue power circle. A stable 218dp square oval drawable with white rim now surrounds a centered 188dp power button, leaving a 15dp glass band. The running green/idle blue state and white power/text remain. Explicit zero MaterialButton insets preserve circular bounds. The original animated halo is a separate subtle radial glow, so its fade cannot remove the fixed glass shell. Reference image is a design reference; no screenshot of the installed app or live backdrop blur is claimed.
+
+Only the homepage switch-code control is changed from LargeActionLabel to a dedicated glass MaterialButton: rounded translucent surface, white rim, ripple, readable title and purple icon, 60dp minimum height. Existing ImportByCode callback and stopped/has-code visibility remain exact. Shared LargeActionLabel and other actions are untouched. Power ToggleStatus callback, busy/stop handling, startup/background refresh, code-dialog behavior, accounting and permissions are unchanged.
+
+Editable: design/src/main/res/layout/design_main.xml and drawable/bg_sxy_power_{shell,halo}.xml, bg_sxy_switch_code.xml. Local XML/resource and before/after event-wiring audits plus original workflow guards cover this reversible appearance change. Full binding/APK compilation and actual device visual/large-font testing remain CI/device gates. No new mirrored tests are needed for unchanged business logic.
+
+Includes the preceding task331 glass update dialog source. Currently distributed Shenxian2.11.56/Wuai2.11.54 remains unchanged and does not include these new visuals. Normal revert/rebuild restores this source; do not overwrite old tags/APKs. After Actions submission stop without checking new results until the user reports completion.
