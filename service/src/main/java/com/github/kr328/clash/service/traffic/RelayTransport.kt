@@ -23,7 +23,7 @@ object RelayTransport {
         all.optJSONObject(key(token))?.takeIf {it.optString("base")==BASE && it.optString("tenant")==TENANT && it.optLong("expires_at")>System.currentTimeMillis()/1000+60}
     }
     fun prime(context: Context,apiBase: String,token: String) {scope.launch {runCatching {grant(context.applicationContext,apiBase,token)}}}
-    fun request(context: Context,url: String,method: String,token: String,body: JSONObject?=null): Reply {
+    fun request(context: Context,url: String,method: String,token: String?,body: JSONObject?=null): Reply {
         require(url.startsWith("https://"))
         val manager=context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
         val underlying=manager.allNetworks.filter {manager.getNetworkCapabilities(it)?.let {c -> c.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)&&c.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)}==true}.take(1)
@@ -34,7 +34,7 @@ object RelayTransport {
                 val target=URL(url)
                 connection=((network?.openConnection(target)?:target.openConnection()) as HttpURLConnection).apply {
                     connectTimeout=2000;readTimeout=3000;requestMethod=method;instanceFollowRedirects=false;useCaches=false
-                    setRequestProperty("Authorization","Bearer $token")
+                    if(token!=null)setRequestProperty("Authorization","Bearer $token")
                     setRequestProperty("Content-Type","application/json")
                     setRequestProperty("User-Agent","Official-Android-Management/1.1")
                     setRequestProperty("Cache-Control","no-cache")
@@ -69,6 +69,19 @@ object RelayTransport {
             all.put(key(token),value);TrafficSecureStore.write(context,GRANTS,all.toString())
         }
         return value
+    }
+    /** Public only before registration; fixed operations, no URL forwarding. */
+    fun entry(context: Context,apiBase: String,operation: String,body: JSONObject): Reply {
+        val path=when(operation){
+            "ticket" -> "/api/import/ticket"
+            "exchange" -> "/api/import/exchange"
+            "verify" -> "/api/v2/client/verify"
+            "state" -> "/api/v2/client/state"
+            else -> throw IllegalArgumentException("unsupported entry operation")
+        }
+        val primary=runCatching {request(context,apiBase.trimEnd('/')+path,"POST",null,body)}.getOrNull()
+        if(primary!=null && primary.status<500)return primary
+        return request(context,"$BASE/v1/client/$TENANT/$operation","POST",null,body)
     }
     fun enqueue(context: Context,apiBase: String,token: String,payload: JSONObject): Reply {
         val auth=grant(context,apiBase,token)

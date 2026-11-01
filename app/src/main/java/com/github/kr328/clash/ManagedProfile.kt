@@ -54,36 +54,13 @@ internal suspend fun Context.issueManagedImportTicket(
     code: String,
     apiBase: String,
 ): String = withContext(Dispatchers.IO) {
-    val body = JSONObject()
-        .put("code", code)
-        .put("target", "shenxianyun")
-        .toString()
-        .toByteArray(Charsets.UTF_8)
-    val connection = (URL("${apiBase.trimEnd('/')}/api/import/ticket").openConnection() as HttpURLConnection).apply {
-        connectTimeout = 8_000
-        readTimeout = 8_000
-        requestMethod = "POST"
-        doOutput = true
-        setRequestProperty("Content-Type", "application/json")
-        setRequestProperty("User-Agent", "Shenxianyun-Android/Managed")
-    }
-    try {
-        connection.outputStream.use { it.write(body) }
-        val stream = if (connection.responseCode in 200..299) {
-            connection.inputStream
-        } else {
-            connection.errorStream
-        }
-        val json = JSONObject(stream?.bufferedReader()?.use { it.readText() }.orEmpty())
-        if (connection.responseCode !in 200..299 || !json.optBoolean("ok", false)) {
-            throw IllegalStateException(json.optString("message", "无法创建安全导入票据"))
-        }
-        Uri.parse(json.optString("launch_url", "")).lastPathSegment
-            ?.takeIf { it.isNotBlank() }
-            ?: throw IllegalStateException("安全导入票据格式无效")
-    } finally {
-        connection.disconnect()
-    }
+    val reply = RelayTransport.entry(this@issueManagedImportTicket, apiBase, "ticket",
+        JSONObject().put("code", code).put("target", "shenxianyun"))
+    val json=reply.json
+    if(reply.status !in 200..299 || !json.optBoolean("ok"))
+        throw IllegalStateException(json.optString("message", "无法创建安全导入票据"))
+    Uri.parse(json.optString("launch_url")).lastPathSegment?.takeIf {it.isNotBlank()}
+        ?: throw IllegalStateException("安全导入票据格式无效")
 }
 
 internal suspend fun Context.exchangeManagedImportTicket(
@@ -91,51 +68,14 @@ internal suspend fun Context.exchangeManagedImportTicket(
     apiBase: String,
     clientId: String,
 ): ManagedCredentials = withContext(Dispatchers.IO) {
-    val base = apiBase.trimEnd('/')
-    val body = JSONObject()
-        .put("ticket", ticket)
-        .put("client_id", clientId)
-        .put("platform", "android")
-        .toString()
-        .toByteArray(Charsets.UTF_8)
-    val connection = (URL("$base/api/import/exchange").openConnection() as HttpURLConnection).apply {
-        connectTimeout = 8_000
-        readTimeout = 8_000
-        requestMethod = "POST"
-        doOutput = true
-        setRequestProperty("Content-Type", "application/json")
-        setRequestProperty("User-Agent", "Shenxianyun-Android/Managed")
-        setRequestProperty("X-Client-Id", clientId)
-    }
-    try {
-        connection.outputStream.use { it.write(body) }
-        val stream = if (connection.responseCode in 200..299) {
-            connection.inputStream
-        } else {
-            connection.errorStream
-        }
-        val json = JSONObject(stream?.bufferedReader()?.use { it.readText() }.orEmpty())
-        val deviceToken = json.optString("device_token", "")
-        val subscriptionUrl = json.optString("subscription_url", "")
-        if (
-            connection.responseCode !in 200..299 ||
-            !json.optBoolean("ok", false) ||
-            deviceToken.isBlank() ||
-            subscriptionUrl.isBlank()
-        ) {
-            throw IllegalStateException(json.optString("message", "安全导入票据无效或已过期"))
-        }
-        ManagedCredentials(
-            accessCode = json.optString("name", ""),
-            apiBase = base,
-            subscriptionUrl = subscriptionUrl,
-            deviceToken = deviceToken,
-            expiresAt = json.optString("expires_at", ""),
-            limitMode = json.optString("limit_mode", "hybrid"),
-        )
-    } finally {
-        connection.disconnect()
-    }
+    val reply=RelayTransport.entry(this@exchangeManagedImportTicket,apiBase,"exchange",
+        JSONObject().put("ticket",ticket).put("client_id",clientId).put("platform","android"))
+    val json=reply.json
+    if(reply.status !in 200..299 || !json.optBoolean("ok") || json.optString("device_token").isBlank() || json.optString("subscription_url").isBlank())
+        throw IllegalStateException(json.optString("message", "安全导入票据无效或已过期"))
+    ManagedCredentials(accessCode=json.optString("name"),apiBase=apiBase.trimEnd('/'),
+        subscriptionUrl=json.getString("subscription_url"),deviceToken=json.getString("device_token"),
+        expiresAt=json.optString("expires_at"),limitMode=json.optString("limit_mode","hybrid"))
 }
 
 private fun Context.managedSecretKey(): SecretKey {
@@ -348,35 +288,8 @@ internal class ManagedStateRetryAfter(val delayMillis: Long) : IllegalStateExcep
 
 /** Status must remain reachable when the active tunnel's nodes are blocked. */
 internal suspend fun Context.readManagedUpdateState(code: String, clientId: String): Pair<Int, JSONObject> = withContext(Dispatchers.IO) {
-    val encoded = java.net.URLEncoder.encode(code, "UTF-8").replace("+", "%20")
-    val cid = java.net.URLEncoder.encode(clientId, "UTF-8")
-    val manager = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-    val underlying = manager.allNetworks.filter { network ->
-        manager.getNetworkCapabilities(network)?.let {
-            it.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) && it.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
-        } == true
-    }.take(1)
-    var failure: IOException? = null
-    for (network in underlying + listOf<Network?>(null)) {
-        var connection: HttpURLConnection? = null
-        try {
-            val url = URL("${EndpointResolver.apiBase()}/api/update-state/$encoded?client_id=$cid")
-            connection = ((network?.openConnection(url) ?: url.openConnection()) as HttpURLConnection).apply {
-                connectTimeout = 8_000; readTimeout = 8_000; requestMethod = "GET"
-                instanceFollowRedirects = false
-                setRequestProperty("X-Client-Id", clientId)
-                setRequestProperty("User-Agent", "Shenxianyun-Android/Managed")
-                setRequestProperty("Cache-Control", "no-cache")
-            }
-            val status = connection.responseCode
-            if (status == 429 || status == 503) {
-                val seconds = connection.getHeaderField("Retry-After")?.toLongOrNull() ?: 30L
-                throw ManagedStateRetryAfter(seconds.coerceIn(1L, 3600L) * 1000L)
-            }
-            val stream = if (status in 200..299) connection.inputStream else connection.errorStream
-            return@withContext status to JSONObject(stream?.bufferedReader()?.use { it.readText() }.orEmpty())
-        } catch (error: IOException) { failure = error
-        } finally { connection?.disconnect() }
-    }
-    throw failure ?: IOException("服务网络暂不可用")
+    val reply=RelayTransport.entry(this@readManagedUpdateState,EndpointResolver.apiBase(),"state",
+        JSONObject().put("code",code).put("client_id",clientId))
+    if(reply.status==429 || reply.status==503)throw ManagedStateRetryAfter(maxOf(30_000L,reply.retryAfter))
+    reply.status to reply.json
 }

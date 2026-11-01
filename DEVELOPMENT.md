@@ -503,3 +503,8 @@ Actions Secrets 中的正式签名，发布到本 52nm 仓库的非预发布 Git
 ## 2026-11-01 国外管理备用（task317）
 
 `service/.../traffic/RelayTransport.kt`：固定品牌租户ll.sxnn.de管理入口，底层非VPN网络优先/default回退、严格TLS无重定向。中心grant在原TrafficSecureStore加密文件缓存，configure后台异步预热，不在UI线程网络IO。ServiceTrafficAccounting冻结pendingObservedAt与原counter/seq持久化；国内主站失败才relay，202排队不当已入账，只有applied+committed或原站成功accept。断线重放相同payload，不生成新timestamp导致409。MainActivity心跳也走相同非VPN请求+固定relay备用；ManagedProfile订阅失败实时向固定tenant代理获取最新配置，401/403不走备用绕鉴权，不缓存节点。旧JSON缺pendingObservedAt首次冻结补值，旧累计/ACK字段兼容。完整编译使用现有GitHub Build APK/app+service unit工作流，提交后按用户约定不等待，不等于正式发版/真机已验。
+
+
+## 2026-11-01 同一服务的首次提取码导入入口（317补充）
+
+双品牌提取码验证/订阅状态/一次性票据申请和设备交换通过同一ll.sxnn.de固定tenant入口，国内DIRECT仍优先、失败备用；不增加新服务器，不共享客户数据库/密钥。relay1.2固定允许verify/state/ticket/exchange的POST正文和官方target，不需要尚不存在的设备token；原主站继续校验提取码/有效期/设备数/一次性票据和既有限速，不缓存凭据或节点。POST /api/v2/client/{verify,state}分别复用原校验/版本状态语义，避免国外入口路径带明文提取码。消费者与上报最终ACK仍按前阶段原实现。交换410/401/403等业务拒绝不自动走备用再消费；网络超时的不确定结果不假称成功，保留原配置。客户端仅验证分支编译，未改正式版本或分发，等用户通知云构建完成后再查准确新source。
