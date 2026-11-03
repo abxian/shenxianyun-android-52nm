@@ -32,9 +32,12 @@ assert '"state"->"/api/v2/client/state"' in compact(entry)
 assert 'request(context,apiBase.trimEnd' in compact(entry) and '/v1/client/$TENANT/$operation' in entry
 assert 'primary.status<500' in compact(entry), 'Business auth failures must not replay through fallback'
 assert 'renewalNeeded' in layout and 'Request.RenewCode' in layout
-assert 'activationCode == null ? View.GONE : View.VISIBLE' in layout
+assert 'activationCode == null || activationExpiresAt == null ? View.GONE : View.VISIBLE' in layout
 assert '!clashRunning || activationExpiresAt == null' not in layout
-assert '@string/activation_expiry_pending' in layout
+assert '@string/activation_expiry_pending' not in layout
+design=(r/'design/src/main/java/com/github/kr328/clash/design/MainDesign.kt').read_text()
+assert 'binding.activationExpiresAt = expiresAt?.trim()?.takeIf' in design
+assert 'it.isNotEmpty() && !it.equals("null", ignoreCase = true)' in design
 assert 'lastSubscriptionUpdateCheck = 0L' in s
 assert 'recoverFromExpired' not in s, 'Old token-rotating recovery must be removed'
 assert s.index('if (code.isNotBlank() && onCodeTrack)') < s.index('requestSubscriptionRefresh(force = true)',s.index('if (code.isNotBlank() && onCodeTrack)')) < s.index('val vpnRequest = startClashService()')

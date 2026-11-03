@@ -75,7 +75,10 @@ class MainDesign(context: Context) : Design<MainDesign.Request>(context) {
 
     suspend fun setActivationExpiresAt(expiresAt: String?) {
         withContext(Dispatchers.Main) {
-            binding.activationExpiresAt = expiresAt
+            // An absent expiry is not an expired account or a pending date label.
+            binding.activationExpiresAt = expiresAt?.trim()?.takeIf {
+                it.isNotEmpty() && !it.equals("null", ignoreCase = true)
+            }
         }
     }
 
