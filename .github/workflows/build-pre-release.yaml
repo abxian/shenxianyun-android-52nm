@@ -66,29 +66,31 @@ jobs:
             } > signing.properties
             echo "Release signing enabled (keystore $(wc -c < release.keystore) bytes)."
           else
-            rm -f signing.properties
-            echo "Signing secrets are not configured. APK will use debug signing."
+            echo "Original release signing secrets are required for this test build." >&2
+            exit 1
           fi
 
       - name: Pre-release Build
         if: success()
-        run: ./gradlew --no-daemon app:assembleAlphaRelease
-
-      - name: Delete old Prerelease-alpha
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release delete Prerelease-alpha --cleanup-tag --yes || true
-          git push origin :refs/tags/Prerelease-alpha || true
+          python3 scripts/test-access-recovery.py
+          python3 scripts/test-startup-refresh.py
+          python3 scripts/test-service-traffic.py
+          ./gradlew --no-daemon app:assembleAlphaRelease
 
       - name: Upload Alpha
         uses: softprops/action-gh-release@v2
         if: ${{  success() }}
         with:
-          tag_name: Prerelease-alpha
+          tag_name: test-expiry-20261103
           target_commitish: ${{ github.sha }}
           files: app/build/outputs/apk/alpha/release/*
           prerelease: true
+          make_latest: false
+          name: 到期时间显示修复 · Android 测试版 · 2026-11-03
+          body: |
+            未设置到期时间的提取码隐藏到期标签；有日期及真实限制保持原样。
+            独立测试版本，正式更新入口不变。构建来源 ${{ github.sha }}。
           generate_release_notes: true
 
       - name: Release Changelog Builder
