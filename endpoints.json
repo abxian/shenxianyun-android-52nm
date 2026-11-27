@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "api_bases": [
+    "https://api.52nm.de:5443"
+  ],
+  "sub_base": "https://api.52nm.de:5443",
+  "download_base": "https://api.52nm.de:5443",
+  "revision": 1795745097089574,
+  "updated_at": "2026-11-27T02:04:57+00:00"
+}
