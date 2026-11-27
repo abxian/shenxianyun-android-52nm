@@ -58,6 +58,7 @@
     <string name="app_update_message">A new %1$s version %2$s is available.</string>
     <string name="app_update_now">Update now</string>
     <string name="app_update_later">Later</string>
+    <string name="app_update_download_unavailable">The download is temporarily unavailable. Try again later.</string>
     <string name="renew_code">Renew Code</string>
     <string name="renew_code_summary">Extend the current code on the official website</string>
     <string name="new_code">Buy New Code</string>

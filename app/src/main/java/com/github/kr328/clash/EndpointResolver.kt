@@ -73,6 +73,49 @@ object EndpointResolver {
 
     fun downloadBase(): String = normalizeBase(prefs.getString(KEY_DOWNLOAD_BASE, null))
 
+    internal suspend fun apkDownloadUrl(version: String, primary: String): String? = withContext(Dispatchers.IO) {
+        if (!Regex("""\d+\.\d+\.\d+""").matches(version)) return@withContext null
+        val filename = "cmfa-$version-meta-universal-release.apk"
+        val candidates = linkedSetOf<String>()
+        fun discoveredPackage() {
+            val base = verifiedHttpsUrl(downloadBase()) ?: return
+            if (base.query == null && base.fragment == null) {
+                candidates += "${base.toString().trimEnd('/')}/sxy/wuai/$filename"
+            }
+        }
+        discoveredPackage()
+        verifiedHttpsUrl(primary)?.let { candidates += it.toString() }
+        candidates.firstOrNull(::isApkReachable)?.let { return@withContext it }
+
+        val previous = candidates.toSet()
+        refresh()
+        discoveredPackage()
+        candidates += "https://github.com/abxian/shenxianyun-android-52nm/releases/download/v$version/wuaiyunall.apk"
+        candidates.firstOrNull { it !in previous && isApkReachable(it) }
+    }
+
+    private fun verifiedHttpsUrl(value: String): java.net.URI? =
+        runCatching { java.net.URI(value) }.getOrNull()?.takeIf {
+            it.scheme == "https" && it.host != null && it.userInfo == null
+        }
+
+    private fun isApkReachable(url: String): Boolean = try {
+        val connection = (URL(url).openConnection() as HttpURLConnection).apply {
+            connectTimeout = PROBE_TIMEOUT_MS
+            readTimeout = PROBE_TIMEOUT_MS
+            setRequestProperty("Range", "bytes=0-3")
+        }
+        try {
+            connection.responseCode in 200..299 && connection.url.protocol == "https" &&
+                connection.inputStream.use { input -> input.read() == 0x50 && input.read() == 0x4b &&
+                    input.read() == 3 && input.read() == 4 }
+        } finally {
+            connection.disconnect()
+        }
+    } catch (_: java.io.IOException) {
+        false
+    }
+
     fun siteName(): String =
         prefs.getString(KEY_SITE_NAME, null)?.trim()?.takeIf(String::isNotEmpty)
             ?: DomainProfile.SITE_NAME

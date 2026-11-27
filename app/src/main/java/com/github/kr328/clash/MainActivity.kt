@@ -979,7 +979,7 @@ class MainActivity : BaseActivity<MainDesign>() {
                 val versionName = json.optString("latest_version_name", "").ifBlank { latestCode.toString() }
                 val currentCode = packageManager.getPackageInfo(packageName, 0).versionCodeCompat
 
-                if (latestCode > currentCode && apkUrl.isNotBlank()) {
+                if (latestCode > currentCode) {
                     Triple(versionName, apkUrl, json.optString("notes", "").takeUnless { it == "null" }.orEmpty().trim())
                 } else {
                     null
@@ -999,7 +999,11 @@ class MainActivity : BaseActivity<MainDesign>() {
             val dialog = AlertDialog.Builder(this@MainActivity)
                 .setView(content)
                 .setPositiveButton(R.string.app_update_now) { _, _ ->
-                    startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(update.second)))
+                    lifecycleScope.launch {
+                        val url = EndpointResolver.apkDownloadUrl(update.first, update.second)
+                        if (url != null) startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                        else showToast(R.string.app_update_download_unavailable, ToastDuration.Long)
+                    }
                 }
                 .setNegativeButton(R.string.app_update_later, null)
                 .create()
