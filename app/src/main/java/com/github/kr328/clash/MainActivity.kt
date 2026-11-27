@@ -13,6 +13,7 @@ import androidx.activity.result.contract.ActivityResultContracts.RequestPermissi
 import androidx.appcompat.app.AlertDialog
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.lifecycleScope
 import com.github.kr328.clash.common.compat.versionCodeCompat
 import com.github.kr328.clash.common.util.intent
 import com.github.kr328.clash.core.Clash
